@@ -1,3 +1,4 @@
+import os
 import platform
 
 CC = 'gcc'
@@ -12,6 +13,7 @@ if system == 'Darwin' and mac_ver[0] and mac_ver[0] < '15':
   CC += '-13'
 
 env = Environment(
+  ENV=os.environ,
   CC=CC,
   CFLAGS=[
     '-nostdlib',

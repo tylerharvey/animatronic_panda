@@ -8,7 +8,9 @@ AddOption('--ubsan',
           action='store_true',
           help='turn on UBSan')
 
+import os
 env = Environment(
+  ENV=os.environ,
   COMPILATIONDB_USE_ABSPATH=True,
   tools=["default", "compilation_db"],
 )

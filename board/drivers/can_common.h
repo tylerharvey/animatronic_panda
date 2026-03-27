@@ -131,6 +131,10 @@ void can_clear(can_ring *q) {
 
 // Helpers
 // Panda:       Bus 0=CAN1   Bus 1=CAN2   Bus 2=CAN3
+// TODO(ejones): modify bus config for MCAN (both sides); disable 3rd bus
+// Mapping with current harness (M-CAN_dongle_003_stamped.pdf):
+// Bus 0 = CAN1 = M-CAN_1 = to head unit (i think)
+// Bus 2 = CAN3 = M-CAN_2 = to car (i think)
 bus_config_t bus_config[BUS_CONFIG_ARRAY_SIZE] = {
   { .bus_lookup = 0U, .can_num_lookup = 0U, .forwarding_bus = -1, .can_speed = 5000U, .can_data_speed = 20000U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
   { .bus_lookup = 1U, .can_num_lookup = 1U, .forwarding_bus = -1, .can_speed = 5000U, .can_data_speed = 20000U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },

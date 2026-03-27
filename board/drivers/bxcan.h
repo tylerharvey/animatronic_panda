@@ -136,6 +136,10 @@ void can_rx(uint8_t can_number) {
   CAN_TypeDef *CANx = CANIF_FROM_CAN_NUM(can_number);
   uint8_t bus_number = BUS_NUM_FROM_CAN_NUM(can_number);
 
+  // TODO(ejones): add a hook for receiving messages for trigger (e.g. star button).
+  // on the correct trigger, we can construct a payload and can_send (like the forwarding
+  // logic below does)
+
   while ((CANx->RF0R & CAN_RF0R_FMP0) != 0U) {
     can_health[can_number].total_rx_cnt += 1U;
 
@@ -157,6 +161,8 @@ void can_rx(uint8_t can_number) {
     can_set_checksum(&to_push);
 
     // forwarding (panda only)
+    // TODO(ejones): hook into forwarding logic to if we need to filter out messages.
+    // luckily, by default, panda forwards between CAN1 and CAN3, which is exactly what we want here.
     int bus_fwd_num = safety_fwd_hook(bus_number, to_push.addr);
     if (bus_fwd_num != -1) {
       CANPacket_t to_send;

@@ -37,6 +37,10 @@ esp_udp inter_proto;
 uint32_t sendData[0x14] = {0};
 uint32_t recvData[0x40] = {0};
 
+void user_pre_init(void) {
+  // linker bug fix 
+}
+
 static int ICACHE_FLASH_ATTR __spi_comm(char *dat, int len, uint32_t *recvData, int recvDataLen) {
   unsigned int length = 0;
 

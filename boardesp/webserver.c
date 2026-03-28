@@ -27,8 +27,8 @@ char pageheader[] = "HTTP/1.0 200 OK\nContent-Type: text/html\n\n"
 "<title>Panda</title>\n"
 "</head>\n"
 "<body>\n"
-"<pre>This is your comma.ai panda\n\n"
-"It's open source. Find the code <a href=\"https://github.com/commaai/panda\">here</a>\n";
+"<pre>This is your comma panda running preconditioning firmware.\n\n"
+"It's open source. Find the code <a href=\"https://github.com/tylerharvey/animatronic_panda\">here</a>\n";
 
 char pagefooter[] = "</pre>\n"
 "</body>\n"

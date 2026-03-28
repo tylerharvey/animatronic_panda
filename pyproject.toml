@@ -1,0 +1,15 @@
+[project]
+name = "pandacan"
+version = "0.0.10"
+requires-python = ">=3.8"
+dependencies = [
+    "pycryptodome",
+    "libusb1",
+    "libusb-package",
+    "tqdm",
+    "scons",
+    "crcmod",
+    "numpy",
+    "setuptools",
+    "requests",
+]

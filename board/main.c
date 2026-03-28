@@ -677,6 +677,7 @@ void TIM1_BRK_TIM9_IRQ_Handler(void) {
   if (TIM9->SR != 0) {
     // siren
     current_board->set_siren((loop_counter & 1U) && siren_enabled);
+    precondition_tick();
 
     // decimated to 1Hz
     if(loop_counter == 0U){
@@ -834,8 +835,11 @@ int main(void) {
   TIM2->EGR = TIM_EGR_UG;
   // use TIM2->CNT to read
 
-  // init to SILENT and can silent
-  set_safety_mode(SAFETY_SILENT, 0);
+  // init to ALLOUTPUT with forwarding between head unit and car buses,
+  // since we'll be running this in headless mode
+  set_safety_mode(SAFETY_ALLOUTPUT, 0);
+  can_set_forwarding(HEAD_UNIT_BUS, CAR_BUS);
+  can_set_forwarding(CAR_BUS, HEAD_UNIT_BUS);
 
   // enable CAN TXs
   current_board->enable_can_transcievers(true);

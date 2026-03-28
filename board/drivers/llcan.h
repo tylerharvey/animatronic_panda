@@ -14,6 +14,7 @@
 #define GET_BYTE(msg, b) (((int)(b) > 3) ? (((msg)->RDHR >> (8U * ((unsigned int)(b) % 4U))) & 0xFFU) : (((msg)->RDLR >> (8U * (unsigned int)(b))) & 0xFFU))
 #define GET_BYTES_04(msg) ((msg)->RDLR)
 #define GET_BYTES_48(msg) ((msg)->RDHR)
+#define ADDR_TO_RIR(addr) (((addr) << 21) | 1U)  // standard ID + TXRQ
 #define GET_FLAG(value, mask) (((__typeof__(mask))param & mask) == mask)
 
 #define CAN_INIT_TIMEOUT_MS 500U

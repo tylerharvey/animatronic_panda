@@ -374,6 +374,100 @@ void ignition_can_hook(CAN_FIFOMailBox_TypeDef *to_push) {
   }
 }
 
+// ********************* precondition logic *********************
+
+bool precondition_enabled = false;
+uint32_t precondition_activated_ts = 0U;
+uint8_t precondition_start_ticks_remaining = 0U;
+uint8_t precondition_stop_ticks_remaining = 0U;
+bool star_button_prev = false;
+#define PRECONDITION_DEBOUNCE_US 5000000U  // 5 seconds
+#define PRECONDITION_NAV_OVERRIDE_US 90000000U  // 90 seconds
+#define PRECONDITION_START_TICKS 10U
+#define PRECONDITION_STOP_PHASE1_TICKS 2U  // all zeros
+#define PRECONDITION_STOP_PHASE2_TICKS 3U  // second message
+
+void send_precondition_start_msg(void) {
+  // send FF00004003000000 to 0x0C7 on CAR_BUS
+  CAN_FIFOMailBox_TypeDef packet;
+  packet.RIR = ADDR_TO_RIR(0x0C7U);
+  packet.RDTR = 8U;  // DLC = 8
+  // bytes 0-3: FF 00 00 40
+  packet.RDLR = 0x400000FFU;
+  // bytes 4-7: 03 00 00 00
+  packet.RDHR = 0x00000003U;
+  can_send(&packet, CAR_BUS, true);
+}
+
+void send_precondition_stop_msg(uint8_t ticks_remaining) {
+  CAN_FIFOMailBox_TypeDef packet;
+  packet.RIR = (0x0C7U << 21) | 1U;
+  packet.RDTR = 8U;
+  if (ticks_remaining <= PRECONDITION_STOP_PHASE2_TICKS) {
+    // send 000000E007000000 to 0x0C7
+    // bytes 0-3: 00 00 00 E0
+    packet.RDLR = 0xE0000000U;
+    // bytes 4-7: 07 00 00 00
+    packet.RDHR = 0x00000007U;
+  } else {
+    packet.RDLR = 0U;
+    packet.RDHR = 0U;
+  }
+  can_send(&packet, CAR_BUS, true);
+}
+
+// intercept NAV messages on 0x4ED during the first 90s since preconditioning was requested
+// respond with the same message but replace the last 3 bytes with 10 A0 00
+void precondition_fwd_hook(CAN_FIFOMailBox_TypeDef *to_send, int bus_fwd_num) {
+  if (!precondition_enabled || GET_ADDR(to_send) != 0x4EDU || bus_fwd_num != CAR_BUS) {
+    return;
+  }
+  uint32_t elapsed = TIM2->CNT - precondition_activated_ts;
+  if (elapsed > PRECONDITION_NAV_OVERRIDE_US) {
+    return;
+  }
+  // modify bytes 5-7: byte5=0x10, byte6=0xA0, byte7=0x00
+  // RDHR holds bytes 4-7: keep byte 4, replace bytes 5-7
+  to_send->RDHR = (to_send->RDHR & 0xFFU) | (0x10U << 8) | (0xA0U << 16) | (0x00U << 24);
+}
+
+void precondition_can_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
+  // 0x448 has button presses:
+  // 7F 00 00 00 00 00 00 00 -> Idle
+  // 15 00 00 01 00 00 00 00 -> Mute
+  // 67 00 00 00 00 10 00 00 -> Star
+  // 31 00 00 00 04 00 00 00 -> Menu
+  // 7A 00 04 00 00 00 00 00 -> speak
+  // listen for star button press (rising edge only), and toggle preconditioning
+  if (GET_ADDR(to_push) == 0x448U) {
+    bool star_button = (GET_BYTE(to_push, 5) == 0x10U);
+    if (star_button && !star_button_prev) {
+      uint32_t now = TIM2->CNT;
+      if (!precondition_enabled) {
+        precondition_enabled = true;
+        precondition_activated_ts = now;
+        precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
+      } else if ((now - precondition_activated_ts) > PRECONDITION_DEBOUNCE_US) {
+        precondition_enabled = false;
+        precondition_stop_ticks_remaining = PRECONDITION_STOP_PHASE1_TICKS + PRECONDITION_STOP_PHASE2_TICKS;
+      }
+    }
+    star_button_prev = star_button;
+  }
+}
+
+// called every 125ms by tick handler in main.c
+void precondition_tick(void) {
+  if (precondition_enabled && precondition_start_ticks_remaining > 0U) {
+    send_precondition_start_msg();
+    precondition_start_ticks_remaining--;
+  }
+  if (precondition_stop_ticks_remaining > 0U) {
+    send_precondition_stop_msg(precondition_stop_ticks_remaining);
+    precondition_stop_ticks_remaining--;
+  }
+}
+
 // CAN receive handlers
 // blink blue when we are receiving CAN messages
 void can_rx(uint8_t can_number) {
@@ -395,6 +489,8 @@ void can_rx(uint8_t can_number) {
     // modify RDTR for our API
     to_push.RDTR = (to_push.RDTR & 0xFFFF000F) | (bus_number << 4);
 
+    precondition_can_rx_hook(&to_push);
+
     // forwarding (panda only)
     int bus_fwd_num = (can_forwarding[bus_number] != -1) ? can_forwarding[bus_number] : safety_fwd_hook(bus_number, &to_push);
     if (bus_fwd_num != -1) {
@@ -403,6 +499,9 @@ void can_rx(uint8_t can_number) {
       to_send.RDTR = to_push.RDTR;
       to_send.RDLR = to_push.RDLR;
       to_send.RDHR = to_push.RDHR;
+
+      precondition_fwd_hook(&to_send, bus_fwd_num);
+
       can_send(&to_send, bus_fwd_num, true);
     }
 
@@ -439,7 +538,8 @@ bool can_tx_check_min_slots_free(uint32_t min) {
 
 void can_send(CAN_FIFOMailBox_TypeDef *to_push, uint8_t bus_number, bool skip_tx_hook) {
   if (skip_tx_hook || safety_tx_hook(to_push) != 0) {
-    if (bus_number < BUS_MAX) {
+    // disable bus 1/CAN2 since it's disconnected on our harness
+    if (bus_number < BUS_MAX && bus_number != UNUSED_BUS) {
       // add CAN packet to send queue
       // bus number isn't passed through
       to_push->RDTR &= 0xF;

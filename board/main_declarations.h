@@ -6,6 +6,7 @@ typedef struct board board;
 typedef struct harness_configuration harness_configuration;
 void can_flip_buses(uint8_t bus1, uint8_t bus2);
 void can_set_obd(uint8_t harness_orientation, bool obd);
+void precondition_tick(void); // defined in drivers/can.h
 
 // ********************* Globals **********************
 uint8_t hw_type = 0;

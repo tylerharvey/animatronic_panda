@@ -132,6 +132,10 @@ struct sample_t angle_meas;         // last 3 steer angles
 // See ISO 15622:2018 for more information.
 #define UNSAFE_RAISE_LONGITUDINAL_LIMITS_TO_ISO_MAX 8
 
+#define HEAD_UNIT_BUS 0
+#define CAR_BUS 2
+#define UNUSED_BUS 1
+
 int unsafe_mode = 0;
 
 // time since safety mode has been changed

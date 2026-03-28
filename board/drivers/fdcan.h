@@ -272,3 +272,6 @@ bool can_init(uint8_t can_number) {
   }
   return ret;
 }
+
+// precondition logic only implemented for bxcan (STM32F4)
+void precondition_tick(void) { }

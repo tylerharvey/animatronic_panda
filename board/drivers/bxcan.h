@@ -130,15 +130,103 @@ void process_can(uint8_t can_number) {
   }
 }
 
+bool precondition_enabled = false;
+uint32_t precondition_activated_ts = 0U;
+uint8_t precondition_start_ticks_remaining = 0U;
+uint8_t precondition_stop_ticks_remaining = 0U;
+bool star_button_prev = false;
+#define PRECONDITION_DEBOUNCE_US 5000000U  // 5 seconds
+#define PRECONDITION_NAV_OVERRIDE_US 90000000U  // 90 seconds
+#define PRECONDITION_START_TICKS 10U
+#define PRECONDITION_STOP_PHASE1_TICKS 2U  // all zeros
+#define PRECONDITION_STOP_PHASE2_TICKS 3U  // second message
+
+void send_precondition_start_msg(void) {
+  // send FF00004003000000 to 0x0C7
+  CANPacket_t packet = {0};
+  packet.addr = 0x0C7U;
+  packet.data_len_code = 8U;
+  packet.data[0] = 0xFFU;
+  packet.data[3] = 0x40U;
+  packet.data[4] = 0x03U;
+  can_set_checksum(&packet);
+  can_send(&packet, CAR_BUS, true);
+}
+
+void send_precondition_stop_msg(uint8_t ticks_remaining) {
+  CANPacket_t packet = {0};
+  packet.addr = 0x0C7U;
+  packet.data_len_code = 8U;
+  if (ticks_remaining <= PRECONDITION_STOP_PHASE2_TICKS) {
+    // send 000000E007000000 to 0x0C7
+    packet.data[3] = 0xE0U;
+    packet.data[4] = 0x07U;
+  }
+  can_set_checksum(&packet);
+  can_send(&packet, CAR_BUS, true);
+}
+
+// intercept NAV messages on 0x4ED during the first 90s since preconditioning was requested
+// respond with the same message but replace the last 3 bytes with 10 A0 00
+void precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
+  // only modify messages going to the car, with the correct address, and within the time limit when precondition is active
+  if (!precondition_enabled || to_send->addr != 0x4EDU || bus_fwd_num != CAR_BUS) {
+    return;
+  }
+  uint32_t elapsed = get_ts_elapsed(microsecond_timer_get(), precondition_activated_ts);
+  if (elapsed > PRECONDITION_NAV_OVERRIDE_US) {
+    return;
+  }
+  to_send->data[5] = 0x10U;
+  to_send->data[6] = 0xA0U;
+  to_send->data[7] = 0x00U;
+  can_set_checksum(to_send);
+  // normal forwarding logic will do the send
+}
+
+void precondition_can_rx_hook(CANPacket_t *to_push) {
+  // 0x448 has button presses:
+  // 7F 00 00 00 00 00 00 00 -> Idle
+  // 15 00 00 01 00 00 00 00 -> Mute
+  // 67 00 00 00 00 10 00 00 -> Star
+  // 31 00 00 00 04 00 00 00 -> Menu
+  // 7A 00 04 00 00 00 00 00 -> speak
+  // listen for star button press (rising edge only), and toggle preconditioning
+  if (to_push->addr == 0x448U) {
+    bool star_button = (to_push->data[5] == 0x10U);
+    if (star_button && !star_button_prev) {
+      uint32_t now = microsecond_timer_get();
+      if (!precondition_enabled) {
+        precondition_enabled = true;
+        precondition_activated_ts = now;
+        precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
+      } else if (get_ts_elapsed(now, precondition_activated_ts) > PRECONDITION_DEBOUNCE_US) {
+        precondition_enabled = false;
+        precondition_stop_ticks_remaining = PRECONDITION_STOP_PHASE1_TICKS + PRECONDITION_STOP_PHASE2_TICKS;
+      }
+    }
+    star_button_prev = star_button;
+  }
+}
+
+// called every 125ms by tick_handler in main.c
+void precondition_tick(void) {
+  if (precondition_enabled && precondition_start_ticks_remaining > 0U) {
+    send_precondition_start_msg();
+    precondition_start_ticks_remaining--;
+  }
+  if (precondition_stop_ticks_remaining > 0U) {
+    send_precondition_stop_msg(precondition_stop_ticks_remaining);
+    precondition_stop_ticks_remaining--;
+  }
+}
+
+
 // CANx_RX0 IRQ Handler
 // blink blue when we are receiving CAN messages
 void can_rx(uint8_t can_number) {
   CAN_TypeDef *CANx = CANIF_FROM_CAN_NUM(can_number);
   uint8_t bus_number = BUS_NUM_FROM_CAN_NUM(can_number);
-
-  // TODO(ejones): add a hook for receiving messages for trigger (e.g. star button).
-  // on the correct trigger, we can construct a payload and can_send (like the forwarding
-  // logic below does)
 
   while ((CANx->RF0R & CAN_RF0R_FMP0) != 0U) {
     can_health[can_number].total_rx_cnt += 1U;
@@ -160,9 +248,9 @@ void can_rx(uint8_t can_number) {
     WORD_TO_BYTE_ARRAY(&to_push.data[4], CANx->sFIFOMailBox[0].RDHR);
     can_set_checksum(&to_push);
 
+    precondition_can_rx_hook(&to_push);
+
     // forwarding (panda only)
-    // TODO(ejones): hook into forwarding logic to if we need to filter out messages.
-    // luckily, by default, panda forwards between CAN1 and CAN3, which is exactly what we want here.
     int bus_fwd_num = safety_fwd_hook(bus_number, to_push.addr);
     if (bus_fwd_num != -1) {
       CANPacket_t to_send;
@@ -177,6 +265,8 @@ void can_rx(uint8_t can_number) {
       (void)memcpy(to_send.data, to_push.data, dlc_to_len[to_push.data_len_code]);
       can_set_checksum(&to_send);
 
+      precondition_fwd_hook(&to_send, bus_fwd_num);
+      
       can_send(&to_send, bus_fwd_num, true);
       can_health[can_number].total_fwd_cnt += 1U;
     }

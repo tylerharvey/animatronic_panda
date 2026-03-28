@@ -159,6 +159,7 @@ static void tick_handler(void) {
     harness_tick();
     simple_watchdog_kick();
     sound_tick();
+    precondition_tick();
 
     // re-init everything that uses harness status
     if (harness.status != prev_harness_status) {
@@ -336,8 +337,10 @@ int main(void) {
     fan_init();
   }
 
-  // init to SILENT and can silent
-  set_safety_mode(SAFETY_SILENT, 0U);
+  // init to ALLOUTPUT with heartbeat disabled, since
+  // we'll be running this in headless mode
+  set_safety_mode(SAFETY_ALLOUTPUT, 1U);  // param 1 = passthrough (enables forwarding)
+  heartbeat_disabled = true;
 
   // enable CAN TXs
   enable_can_transceivers(true);

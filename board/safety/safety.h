@@ -227,10 +227,10 @@ bool safety_tx_hook(CANPacket_t *msg) {
 
 static int get_fwd_bus(int bus_num) {
   int destination_bus;
-  if (bus_num == 0) {
-    destination_bus = 2;
-  } else if (bus_num == 2) {
-    destination_bus = 0;
+  if (bus_num == HEAD_UNIT_BUS) {
+    destination_bus = CAR_BUS;
+  } else if (bus_num == CAR_BUS) {
+    destination_bus = HEAD_UNIT_BUS;
   } else {
     destination_bus = -1;
   }

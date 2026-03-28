@@ -10,6 +10,8 @@ typedef struct harness_configuration harness_configuration;
 void pwm_init(TIM_TypeDef *TIM, uint8_t channel);
 void pwm_set(TIM_TypeDef *TIM, uint8_t channel, uint8_t percentage);
 
+void precondition_tick(void); // defined in drivers/bxcan.h
+
 // ********************* Globals **********************
 extern uint8_t hw_type;
 extern board *current_board;

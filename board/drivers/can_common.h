@@ -135,6 +135,8 @@ void can_clear(can_ring *q) {
 // Mapping with current harness (M-CAN_dongle_003_stamped.pdf):
 // Bus 0 = CAN1 = M-CAN_1 = to head unit (i think)
 // Bus 2 = CAN3 = M-CAN_2 = to car (i think)
+// also see added declarations in board/safety/declarations.h
+
 bus_config_t bus_config[BUS_CONFIG_ARRAY_SIZE] = {
   { .bus_lookup = 0U, .can_num_lookup = 0U, .forwarding_bus = -1, .can_speed = 5000U, .can_data_speed = 20000U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
   { .bus_lookup = 1U, .can_num_lookup = 1U, .forwarding_bus = -1, .can_speed = 5000U, .can_data_speed = 20000U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
@@ -195,7 +197,8 @@ bool can_check_checksum(CANPacket_t *packet) {
 
 void can_send(CANPacket_t *to_push, uint8_t bus_number, bool skip_tx_hook) {
   if (skip_tx_hook || safety_tx_hook(to_push) != 0) {
-    if (bus_number < PANDA_BUS_CNT) {
+    // disable bus 1/CAN2 since it's disconnected on our harness
+    if (bus_number < PANDA_BUS_CNT && bus_number != UNUSED_BUS) {
       // add CAN packet to send queue
       tx_buffer_overflow += can_push(can_queues[bus_number], to_push) ? 0U : 1U;
       process_can(CAN_NUM_FROM_BUS_NUM(bus_number));

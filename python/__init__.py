@@ -10,10 +10,10 @@ import traceback
 import subprocess
 import sys
 from .dfu import PandaDFU  # pylint: disable=import-error
-from .esptool import ESPROM, CesantaFlasher  # noqa pylint: disable=import-error
+from .p2_esptool import ESPROM, CesantaFlasher  # noqa pylint: disable=import-error
 from .flash_release import flash_release  # noqa pylint: disable=import-error
 from .update import ensure_st_up_to_date  # noqa pylint: disable=import-error
-from .serial import PandaSerial  # noqa pylint: disable=import-error
+from .panda_serial import PandaSerial  # noqa pylint: disable=import-error
 from .isotp import isotp_send, isotp_recv  # pylint: disable=import-error
 
 

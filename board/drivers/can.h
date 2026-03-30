@@ -376,16 +376,31 @@ void ignition_can_hook(CAN_FIFOMailBox_TypeDef *to_push) {
 
 // ********************* precondition logic *********************
 
+// is the user currently requesting preconditioning to be active?
 bool precondition_enabled = false;
-uint32_t precondition_activated_ts = 0U;
+// timestamp of when the user requested preconditioning
+uint32_t precondition_requested_ts = 0U;
+// timestamp of last attempt to send precondition message, used for retry logic
+uint32_t precondition_last_attempt_ts = 0U;
+// number of ticks remaining to send precondition start/stop messages, used for initial burst logic
 uint8_t precondition_start_ticks_remaining = 0U;
 uint8_t precondition_stop_ticks_remaining = 0U;
+// number of times we've retried sending precondition messages, used for retry logic
+uint8_t precondition_retries = 0U;
+// has preconditioning been confirmed by the 2AD status frame?
+bool precondition_confirmed = false;
+// has precondition stop been confirmed by the 2AD status frame?
+bool precondition_stop_confirmed = true;
+// track previous state of star button for edge detection
 bool star_button_prev = false;
+
 #define PRECONDITION_DEBOUNCE_US 5000000U  // 5 seconds
 #define PRECONDITION_NAV_OVERRIDE_US 90000000U  // 90 seconds
 #define PRECONDITION_START_TICKS 10U
 #define PRECONDITION_STOP_PHASE1_TICKS 2U  // all zeros
 #define PRECONDITION_STOP_PHASE2_TICKS 3U  // second message
+#define PRECONDITION_RETRY_US 10000000U  // 10 seconds
+#define PRECONDITION_MAX_RETRIES 10U
 
 void send_precondition_start_msg(void) {
   // send FF00004003000000 to 0x0C7 on CAR_BUS
@@ -401,7 +416,7 @@ void send_precondition_start_msg(void) {
 
 void send_precondition_stop_msg(uint8_t ticks_remaining) {
   CAN_FIFOMailBox_TypeDef packet;
-  packet.RIR = (0x0C7U << 21) | 1U;
+  packet.RIR = ADDR_TO_RIR(0x0C7U);
   packet.RDTR = 8U;
   if (ticks_remaining <= PRECONDITION_STOP_PHASE2_TICKS) {
     // send 000000E007000000 to 0x0C7
@@ -422,7 +437,7 @@ void precondition_fwd_hook(CAN_FIFOMailBox_TypeDef *to_send, int bus_fwd_num) {
   if (!precondition_enabled || GET_ADDR(to_send) != 0x4EDU || bus_fwd_num != CAR_BUS) {
     return;
   }
-  uint32_t elapsed = TIM2->CNT - precondition_activated_ts;
+  uint32_t elapsed = get_ts_elapsed(TIM2->CNT, precondition_requested_ts);
   if (elapsed > PRECONDITION_NAV_OVERRIDE_US) {
     return;
   }
@@ -432,6 +447,22 @@ void precondition_fwd_hook(CAN_FIFOMailBox_TypeDef *to_send, int bus_fwd_num) {
 }
 
 void precondition_can_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
+  // 0x2AD status frame: second byte indicates precondition state
+  //   0x01 = off/idle, 0x05 = starting, 0x15 = fully running
+  if (GET_ADDR(to_push) == 0x2ADU) {
+    uint8_t status = GET_BYTE(to_push, 1);
+    if (precondition_enabled && !precondition_confirmed) {
+      if (status == 0x05U || status == 0x15U) {
+        precondition_confirmed = true;
+      }
+    }
+    if (!precondition_enabled && !precondition_stop_confirmed && precondition_stop_ticks_remaining == 0U) {
+      if (status == 0x01U) {
+        precondition_stop_confirmed = true;
+      }
+    }
+  }
+
   // 0x448 has button presses:
   // 7F 00 00 00 00 00 00 00 -> Idle
   // 15 00 00 01 00 00 00 00 -> Mute
@@ -445,11 +476,17 @@ void precondition_can_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
       uint32_t now = TIM2->CNT;
       if (!precondition_enabled) {
         precondition_enabled = true;
-        precondition_activated_ts = now;
+        precondition_requested_ts = now;
+        precondition_last_attempt_ts = now;
         precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
-      } else if ((now - precondition_activated_ts) > PRECONDITION_DEBOUNCE_US) {
+        precondition_confirmed = false;
+        precondition_retries = 0U;
+      } else if (get_ts_elapsed(now, precondition_requested_ts) > PRECONDITION_DEBOUNCE_US) {
         precondition_enabled = false;
+        precondition_last_attempt_ts = now;
         precondition_stop_ticks_remaining = PRECONDITION_STOP_PHASE1_TICKS + PRECONDITION_STOP_PHASE2_TICKS;
+        precondition_stop_confirmed = false;
+        precondition_retries = 0U;
       }
     }
     star_button_prev = star_button;
@@ -458,10 +495,36 @@ void precondition_can_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
 
 // called every 125ms by tick handler in main.c
 void precondition_tick(void) {
+  uint32_t now = TIM2->CNT;
+
+  // retry start if not confirmed
+  if (precondition_enabled && !precondition_confirmed
+      && precondition_start_ticks_remaining == 0U
+      // TODO(ejones): if we go through all our retries, maybe we should reset precondition_enabled to false and require the user to press the button again...
+      && precondition_retries < PRECONDITION_MAX_RETRIES
+      && get_ts_elapsed(now, precondition_last_attempt_ts) > PRECONDITION_RETRY_US) {
+    precondition_last_attempt_ts = now;
+    precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
+    precondition_retries++;
+  }
+
+  // retry stop if not confirmed
+  if (!precondition_enabled && !precondition_stop_confirmed
+      && precondition_stop_ticks_remaining == 0U
+      && precondition_retries < PRECONDITION_MAX_RETRIES
+      && get_ts_elapsed(now, precondition_last_attempt_ts) > PRECONDITION_RETRY_US) {
+    precondition_last_attempt_ts = now;
+    precondition_stop_ticks_remaining = PRECONDITION_STOP_PHASE1_TICKS + PRECONDITION_STOP_PHASE2_TICKS;
+    precondition_retries++;
+  }
+
+  // send initial burst of start messages
   if (precondition_enabled && precondition_start_ticks_remaining > 0U) {
     send_precondition_start_msg();
     precondition_start_ticks_remaining--;
   }
+
+  // send initial burst of stop messages
   if (precondition_stop_ticks_remaining > 0U) {
     send_precondition_stop_msg(precondition_stop_ticks_remaining);
     precondition_stop_ticks_remaining--;

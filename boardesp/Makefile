@@ -39,10 +39,10 @@ else
 endif
 
 flashall: user1.bin user2.bin
-	../python/panda_esptool.py write_flash 0 $(ESP_SDK_DIR)/bin/boot_v1.7.bin 0x01000 user1.bin 0x81000 user2.bin 0x3FE000 $(ESP_SDK_DIR)/bin/blank.bin
+	../python/esptool.py write_flash 0 $(ESP_SDK_DIR)/bin/boot_v1.7.bin 0x01000 user1.bin 0x81000 user2.bin 0x3FE000 $(ESP_SDK_DIR)/bin/blank.bin
 
 proxy-0x00000.bin: proxy
-	../python/panda_esptool.py elf2image $^
+	../python/esptool.py elf2image $^
 
 proxy: proxy.o elm327.o webserver.o sha.o
 
@@ -67,7 +67,7 @@ obj/rsa.o: ../crypto/rsa.c
 	$(CC) $(CFLAGS) -c $^ -o $@
 
 oldflash: proxy-0x00000.bin
-	../python/panda_esptool.py write_flash 0 proxy-0x00000.bin 0x40000 proxy-0x40000.bin
+	../python/esptool.py write_flash 0 proxy-0x00000.bin 0x40000 proxy-0x40000.bin
 
 user1.bin: obj/proxy.o obj/elm327.o obj/webserver.o obj/sha.o obj/rsa.o
 	$(CC) $(CFLAGS) $^ -o a.out -L$(ESP_SDK_DIR)/ld -T$(ESP_SDK_DIR)/ld/eagle.app.v6.new.1024.app1.ld $(LDLIBS)

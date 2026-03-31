@@ -1,9 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+# NB: Before sending a PR to change the above line to '#!/usr/bin/env python2', please read https://github.com/espressif/esptool/issues/21
 #
 # ESP8266 ROM Bootloader Utility
-# https://github.com/themadinventor/esptool
+# https://github.com/espressif/esptool
 #
-# Copyright (C) 2014-2016 Fredrik Ahlberg, Angus Gratton, other contributors as noted.
+# Copyright (C) 2014-2016 Fredrik Ahlberg, Angus Gratton, Espressif Systems, other contributors as noted.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -31,14 +32,24 @@ import subprocess
 import sys
 import tempfile
 import time
-#import traceback
 import usb1
 
-__version__ = "1.2"
+
+__version__ = "1.3"
+
+
 
 class FakePort(object):
   def __init__(self, serial=None):
-    from panda import Panda
+    try:
+      from . import Panda
+    except ImportError:
+      # bs so that the import works when running as a script
+      sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+      try:
+        from python import Panda
+      except ImportError:
+        from panda import Panda
     self.panda = Panda(serial)
 
     # will only work on new st, old ones will stay @ 921600
@@ -76,6 +87,7 @@ class FakePort(object):
 
   def inWaiting(self):
     return False
+
 
 class ESPROM(object):
     # These are the currently known commands supported by the ROM
@@ -129,16 +141,13 @@ class ESPROM(object):
     @staticmethod
     def checksum(data, state=ESP_CHECKSUM_MAGIC):
         for b in data:
-            if isinstance(b, int):
-                state ^= b
-            else:
-                state ^= ord(b)
+            state ^= b
         return state
 
     """ Send a request and read the response """
     def command(self, op=None, data=None, chk=0):
         if op is not None:
-            pkt = struct.pack('<BBHI', 0x00, op, len(data), chk) + data
+            pkt = struct.pack(b'<BBHI', 0x00, op, len(data), chk) + data
             self.write(pkt)
 
         # tries to get a response until that response has the
@@ -166,42 +175,35 @@ class ESPROM(object):
 
     """ Try connecting repeatedly until successful, or giving up """
     def connect(self):
-        print('Connecting...')
+        print('Connecting...', end='')
+        sys.stdout.flush()
+        last_error = None
 
-        for _ in range(4):
-            # issue reset-to-bootloader:
-            # RTS = either CH_PD or nRESET (both active low = chip in reset)
-            # DTR = GPIO0 (active low = boot to flasher)
-            """
-            self._port.setDTR(False)
-            self._port.setRTS(True)
-            time.sleep(0.05)
-            self._port.setDTR(True)
-            self._port.setRTS(False)
-            time.sleep(0.05)
-            self._port.setDTR(False)
-            """
-            self._port.reset()
-
-            # worst-case latency timer should be 255ms (probably <20ms)
-            self._port.timeout = 0.3
+        try:
             for _ in range(4):
-                try:
-                    self._port.flushInput()
-                    self._slip_reader = slip_reader(self._port)
-                    self._port.flushOutput()
-                    self.sync()
-                    self._port.timeout = 5
-                    return
-                except Exception:
-                    print("Connection timeout.")
-                    #traceback.print_exc()
-                    time.sleep(0.05)
-        raise FatalError('Failed to connect to ESP8266')
+                self._port.reset()
+
+                # worst-case latency timer should be 255ms (probably <20ms)
+                self._port.timeout = 0.3
+                for _ in range(4):
+                    try:
+                        self._port.flushInput()
+                        self._slip_reader = slip_reader(self._port)
+                        self._port.flushOutput()
+                        self.sync()
+                        self._port.timeout = 5
+                        return
+                    except Exception as e:
+                        print("Connection timeout.")
+                        time.sleep(0.05)
+                        last_error = e
+        finally:
+            print('')  # end 'Connecting...' line
+        raise FatalError('Failed to connect to ESP8266: %s' % last_error)
 
     """ Read memory address in target """
     def read_reg(self, addr):
-        res = self.command(ESPROM.ESP_READ_REG, struct.pack('<I', addr))
+        res = self.command(ESPROM.ESP_READ_REG, struct.pack(b'<I', addr))
         if res[1] != b"\0\0":
             raise FatalError('Failed to read target memory')
         return res[0]
@@ -209,26 +211,26 @@ class ESPROM(object):
     """ Write to memory address in target """
     def write_reg(self, addr, value, mask, delay_us=0):
         if self.command(ESPROM.ESP_WRITE_REG,
-                        struct.pack('<IIII', addr, value, mask, delay_us))[1] != b"\0\0":
+                        struct.pack(b'<IIII', addr, value, mask, delay_us))[1] != b"\0\0":
             raise FatalError('Failed to write target memory')
 
     """ Start downloading an application image to RAM """
     def mem_begin(self, size, blocks, blocksize, offset):
         if self.command(ESPROM.ESP_MEM_BEGIN,
-                        struct.pack('<IIII', size, blocks, blocksize, offset))[1] != b"\0\0":
+                        struct.pack(b'<IIII', size, blocks, blocksize, offset))[1] != b"\0\0":
             raise FatalError('Failed to enter RAM download mode')
 
     """ Send a block of an image to RAM """
     def mem_block(self, data, seq):
         if self.command(ESPROM.ESP_MEM_DATA,
-                        struct.pack('<IIII', len(data), seq, 0, 0) + data,
+                        struct.pack(b'<IIII', len(data), seq, 0, 0) + data,
                         ESPROM.checksum(data))[1] != b"\0\0":
             raise FatalError('Failed to write to target RAM')
 
     """ Leave download mode and run the application """
     def mem_finish(self, entrypoint=0):
         if self.command(ESPROM.ESP_MEM_END,
-                        struct.pack('<II', int(entrypoint == 0), entrypoint))[1] != b"\0\0":
+                        struct.pack(b'<II', int(entrypoint == 0), entrypoint))[1] != b"\0\0":
             raise FatalError('Failed to leave RAM download mode')
 
     """ Start downloading to Flash (performs an erase) """
@@ -253,7 +255,7 @@ class ESPROM(object):
         self._port.timeout = 20
         t = time.time()
         result = self.command(ESPROM.ESP_FLASH_BEGIN,
-                              struct.pack('<IIII', erase_size, num_blocks, ESPROM.ESP_FLASH_BLOCK, offset))[1]
+                              struct.pack(b'<IIII', erase_size, num_blocks, ESPROM.ESP_FLASH_BLOCK, offset))[1]
         if size != 0:
             print("Took %.2fs to erase flash block" % (time.time() - t))
         if result != b"\0\0":
@@ -263,14 +265,14 @@ class ESPROM(object):
     """ Write block to flash """
     def flash_block(self, data, seq):
         result = self.command(ESPROM.ESP_FLASH_DATA,
-                              struct.pack('<IIII', len(data), seq, 0, 0) + data,
+                              struct.pack(b'<IIII', len(data), seq, 0, 0) + data,
                               ESPROM.checksum(data))[1]
         if result != b"\0\0":
             raise FatalError.WithResult('Failed to write to target Flash after seq %d (got result %%s)' % seq, result)
 
     """ Leave flash mode and run/reboot """
     def flash_finish(self, reboot=False):
-        pkt = struct.pack('<I', int(not reboot))
+        pkt = struct.pack(b'<I', int(not reboot))
         if self.command(ESPROM.ESP_FLASH_END, pkt)[1] != b"\0\0":
             raise FatalError('Failed to leave Flash mode')
 
@@ -342,7 +344,8 @@ class ESPROM(object):
             raise FatalError('Stub requires %d params, %d provided'
                              % (stub['num_params'], len(params)))
 
-        params = struct.pack('<' + ('I' * stub['num_params']), *params)
+        params = struct.pack(b'<' + (b'I' * stub['num_params']), *params)
+
         pc = params + stub['code']
 
         # Upload
@@ -420,7 +423,7 @@ class BaseFirmwareImage(object):
     def save_segment(self, f, segment, checksum=None):
         """ Save the next segment to the image file, return next checksum value if provided """
         (offset, size, data) = segment
-        f.write(struct.pack('<II', offset, size))
+        f.write(struct.pack(b'<II', offset, size))
         f.write(data)
         if checksum is not None:
             return ESPROM.checksum(data, checksum)
@@ -435,11 +438,11 @@ class BaseFirmwareImage(object):
     def append_checksum(self, f, checksum):
         """ Append ESPROM checksum to the just-written image """
         align_file_position(f, 16)
-        f.write(struct.pack('B', checksum))
+        f.write(struct.pack(b'B', checksum))
 
     def write_v1_header(self, f, segments):
-        f.write(struct.pack('<BBBBI', ESPROM.ESP_IMAGE_MAGIC, len(segments),
-                            self.flash_mode, self.flash_size_freq, self.entrypoint))  # pylint: disable=no-member
+        f.write(struct.pack(b'<BBBBI', ESPROM.ESP_IMAGE_MAGIC, len(segments),
+                            self.flash_mode, self.flash_size_freq, self.entrypoint))
 
 
 class ESPFirmwareImage(BaseFirmwareImage):
@@ -513,7 +516,7 @@ class OTAFirmwareImage(BaseFirmwareImage):
     def save(self, filename):
         with open(filename, 'wb') as f:
             # Save first header for irom0 segment
-            f.write(struct.pack('<BBBBI', ESPBOOTLOADER.IMAGE_V2_MAGIC, ESPBOOTLOADER.IMAGE_V2_SEGMENT,
+            f.write(struct.pack(b'<BBBBI', ESPBOOTLOADER.IMAGE_V2_MAGIC, ESPBOOTLOADER.IMAGE_V2_SEGMENT,
                                 self.flash_mode, self.flash_size_freq, self.entrypoint))
 
             # irom0 segment identified by load address zero
@@ -551,7 +554,7 @@ class ELFFile(object):
             print("Error calling %s, do you have Xtensa toolchain in PATH?" % tool_nm)
             sys.exit(1)
         for l in proc.stdout:
-            fields = l.decode().strip().split()
+            fields = l.strip().decode("utf-8", "strict").split()
             try:
                 if fields[0] == "U":
                     print("Warning: ELF binary has undefined symbol %s" % fields[1])
@@ -576,7 +579,7 @@ class ELFFile(object):
             print("Error calling %s, do you have Xtensa toolchain in PATH?" % tool_readelf)
             sys.exit(1)
         for l in proc.stdout:
-            fields = l.decode().strip().split()
+            fields = l.strip().decode("utf-8", "strict").split()
             if fields[0] == "Entry":
                 return int(fields[3], 0)
 
@@ -608,6 +611,7 @@ class CesantaFlasher(object):
         if baud_rate <= ESPROM.ESP_ROM_BAUD:  # don't change baud rates if we already synced at that rate
             baud_rate = 0
         self._esp = esp
+
         esp.run_stub(json.loads(_CESANTA_FLASHER_STUB), [baud_rate], read_output=False)
         if baud_rate > 0:
             esp._port.baudrate = baud_rate
@@ -621,8 +625,8 @@ class CesantaFlasher(object):
         assert len(data) % self._esp.ESP_FLASH_SECTOR == 0, 'Length must be sector-aligned'
         sys.stdout.write('Writing %d @ 0x%x... ' % (len(data), addr))
         sys.stdout.flush()
-        self._esp.write(struct.pack('<B', self.CMD_FLASH_WRITE))
-        self._esp.write(struct.pack('<III', addr, len(data), 1))
+        self._esp.write(struct.pack(b'<B', self.CMD_FLASH_WRITE))
+        self._esp.write(struct.pack(b'<III', addr, len(data), 1))
         num_sent, num_written = 0, 0
         while num_written < len(data):
             p = self._esp.read()
@@ -658,19 +662,19 @@ class CesantaFlasher(object):
     def flash_read(self, addr, length, show_progress=False):
         sys.stdout.write('Reading %d @ 0x%x... ' % (length, addr))
         sys.stdout.flush()
-        self._esp.write(struct.pack('<B', self.CMD_FLASH_READ))
+        self._esp.write(struct.pack(b'<B', self.CMD_FLASH_READ))
         # USB may not be able to keep up with the read rate, especially at
         # higher speeds. Since we don't have flow control, this will result in
         # data loss. Hence, we use small packet size and only allow small
         # number of bytes in flight, which we can reasonably expect to fit in
         # the on-chip FIFO. max_in_flight = 64 works for CH340G, other chips may
         # have longer FIFOs and could benefit from increasing max_in_flight.
-        self._esp.write(struct.pack('<IIII', addr, length, 32, 64))
+        self._esp.write(struct.pack(b'<IIII', addr, length, 32, 64))
         data = b''
         while True:
             p = self._esp.read()
             data += p
-            self._esp.write(struct.pack('<I', len(data)))
+            self._esp.write(struct.pack(b'<I', len(data)))
             if show_progress and (len(data) % 1024 == 0 or len(data) == length):
                 progress = '%d (%d %%)' % (len(data), len(data) * 100.0 / length)
                 sys.stdout.write(progress + '\b' * len(progress))
@@ -696,8 +700,8 @@ class CesantaFlasher(object):
         return data
 
     def flash_digest(self, addr, length, digest_block_size=0):
-        self._esp.write(struct.pack('<B', self.CMD_FLASH_DIGEST))
-        self._esp.write(struct.pack('<III', addr, length, digest_block_size))
+        self._esp.write(struct.pack(b'<B', self.CMD_FLASH_DIGEST))
+        self._esp.write(struct.pack(b'<III', addr, length, digest_block_size))
         digests = []
         while True:
             p = self._esp.read()
@@ -713,7 +717,7 @@ class CesantaFlasher(object):
         return digests[-1], digests[:-1]
 
     def boot_fw(self):
-        self._esp.write(struct.pack('<B', self.CMD_BOOT_FW))
+        self._esp.write(struct.pack(b'<B', self.CMD_BOOT_FW))
         p = self._esp.read()
         if len(p) != 1:
             raise FatalError('Expected status, got: %s' % hexify(p))
@@ -750,7 +754,8 @@ def slip_reader(port):
             raise FatalError("Timed out waiting for packet %s" % ("header" if partial_packet is None else "content"))
 
         for b in read_bytes:
-            if isinstance(b, int):
+
+            if type(b) is int:
                 b = bytes([b])
             if partial_packet is None:  # waiting for packet header
                 if b == b'\xc0':
@@ -809,15 +814,17 @@ def align_file_position(f, size):
 
 
 def hexify(s):
-    if isinstance(s, bytes):
-        return ''.join('%02X' % b for b in s)
-    return ''.join('%02X' % ord(c) for c in s)
+    return ''.join('%02X' % c for c in s)
 
 
 def unhexify(hs):
     s = bytes()
+
     for i in range(0, len(hs) - 1, 2):
-        s += bytes([int(hs[i] + hs[i + 1], 16)])
+        hex_string = hs[i:i + 2]
+
+        s += bytes([int(hex_string, 16)])
+
     return s
 
 
@@ -878,10 +885,11 @@ def dump_mem(esp, args):
     f = open(args.filename, 'wb')
     for i in range(args.size // 4):
         d = esp.read_reg(args.address + (i * 4))
-        f.write(struct.pack('<I', d))
+        f.write(struct.pack(b'<I', d))
         if f.tell() % 1024 == 0:
             print('\r%d bytes read... (%d %%)' % (f.tell(),
-                                                  f.tell() * 100 // args.size), end=' ')
+                                                  f.tell() * 100 / args.size),
+                  end=' ')
         sys.stdout.flush()
     print('Done!')
 
@@ -898,13 +906,25 @@ def detect_flash_size(esp, args):
             print('Auto-detected Flash size:', args.flash_size)
 
 
-def write_flash(esp, args):
+def _get_flash_params(esp, args):
+    """ Return binary flash parameters (bitstring length 2) for args """
     detect_flash_size(esp, args)
     flash_mode = {'qio':0, 'qout':1, 'dio':2, 'dout': 3}[args.flash_mode]
     flash_size_freq = {'4m':0x00, '2m':0x10, '8m':0x20, '16m':0x30, '32m':0x40, '16m-c1': 0x50, '32m-c1':0x60, '32m-c2':0x70}[args.flash_size]
     flash_size_freq += {'40m':0, '26m':1, '20m':2, '80m': 0xf}[args.flash_freq]
-    flash_params = struct.pack('BB', flash_mode, flash_size_freq)
+    return struct.pack(b'BB', flash_mode, flash_size_freq)
 
+
+def _update_image_flash_params(address, flash_params, image):
+    """ Modify the flash mode & size bytes if this looks like an executable image """
+    if address == 0 and image[0] == 0xE9:
+        print('Flash params set to 0x%04x' % struct.unpack(">H", flash_params)[0])
+        image = image[0:2] + flash_params + image[4:]
+    return image
+
+
+def write_flash(esp, args):
+    flash_params = _get_flash_params(esp, args)
     flasher = CesantaFlasher(esp, args.baud)
 
     for address, argfile in args.addr_filename:
@@ -912,10 +932,7 @@ def write_flash(esp, args):
         argfile.seek(0)  # rewind in case we need it again
         if address + len(image) > int(args.flash_size.split('m')[0]) * (1 << 17):
             print('WARNING: Unlikely to work as data goes beyond end of flash. Hint: Use --flash_size')
-        # Fix sflash config data.
-        if address == 0 and image[0:1] == b'\xe9':
-            print('Flash params set to 0x%02x%02x' % (flash_mode, flash_size_freq))
-            image = image[0:2] + flash_params + image[4:]
+        image = _update_image_flash_params(address, flash_params, image)
         # Pad to sector size, which is the minimum unit of writing (erasing really).
         if len(image) % esp.ESP_FLASH_SECTOR != 0:
             image += b'\xff' * (esp.ESP_FLASH_SECTOR - (len(image) % esp.ESP_FLASH_SECTOR))
@@ -923,18 +940,18 @@ def write_flash(esp, args):
         flasher.flash_write(address, image, not args.no_progress)
         t = time.time() - t
         print('\rWrote %d bytes at 0x%x in %.1f seconds (%.1f kbit/s)...'
-               % (len(image), address, t, len(image) / t * 8 / 1000))
+              % (len(image), address, t, len(image) / t * 8 / 1000))
     print('Leaving...')
     if args.verify:
         print('Verifying just-written flash...')
-        _verify_flash(flasher, args, flash_params)
+        _verify_flash(esp, args, flasher)
     flasher.boot_fw()
 
 
 def image_info(args):
     image = LoadFirmwareImage(args.filename)
     print('Image version: %d' % image.version)
-    print(('Entry point: %08x' % image.entrypoint) if image.entrypoint != 0 else 'Entry point not set')
+    print('Entry point: %08x' % image.entrypoint if image.entrypoint != 0 else 'Entry point not set')
     print('%d segments' % len(image.segments))
     print()
     checksum = ESPROM.ESP_CHECKSUM_MAGIC
@@ -1002,7 +1019,7 @@ def elf2image(args):
 
 def read_mac(esp, args):
     mac = esp.read_mac()
-    print('MAC: %s' % ':'.join(['%02x' % x for x in mac]))
+    print('MAC: %s' % ':'.join(map(lambda x: '%02x' % x, mac)))
 
 
 def chip_id(esp, args):
@@ -1036,23 +1053,29 @@ def read_flash(esp, args):
     data = flasher.flash_read(args.address, args.size, not args.no_progress)
     t = time.time() - t
     print('\rRead %d bytes at 0x%x in %.1f seconds (%.1f kbit/s)...'
-           % (len(data), args.address, t, len(data) / t * 8 / 1000))
+          % (len(data), args.address, t, len(data) / t * 8 / 1000))
     open(args.filename, 'wb').write(data)
 
 
-def _verify_flash(flasher, args, flash_params=None):
+def _verify_flash(esp, args, flasher=None):
     differences = False
+    flash_params = _get_flash_params(esp, args)
+    if flasher is None:  # get flash params before launching flasher
+        flasher = CesantaFlasher(esp)
+
     for address, argfile in args.addr_filename:
         image = argfile.read()
         argfile.seek(0)  # rewind in case we need it again
-        if address == 0 and image[0:1] == b'\xe9' and flash_params is not None:
-            image = image[0:2] + flash_params + image[4:]
+
+        image = _update_image_flash_params(address, flash_params, image)
+
         image_size = len(image)
         print('Verifying 0x%x (%d) bytes @ 0x%08x in flash against %s...' % (image_size, image_size, address, argfile.name))
         # Try digest first, only read if there are differences.
         digest, _ = flasher.flash_digest(address, image_size)
         digest = hexify(digest).upper()
         expected_digest = hashlib.md5(image).hexdigest().upper()
+
         if digest == expected_digest:
             print('-- verify OK (digest matched)')
             continue
@@ -1067,16 +1090,13 @@ def _verify_flash(flasher, args, flash_params=None):
         diff = [i for i in range(image_size) if flash[i] != image[i]]
         print('-- verify FAILED: %d differences, first @ 0x%08x' % (len(diff), address + diff[0]))
         for d in diff:
-            flash_byte = flash[d] if isinstance(flash[d], int) else ord(flash[d])
-            image_byte = image[d] if isinstance(image[d], int) else ord(image[d])
-            print('   %08x %02x %02x' % (address + d, flash_byte, image_byte))
+            print('   %08x %02x %02x' % (address + d, flash[d], image[d]))
     if differences:
         raise FatalError("Verify failed.")
 
 
 def verify_flash(esp, args, flash_params=None):
-    flasher = CesantaFlasher(esp)
-    _verify_flash(flasher, args, flash_params)
+    _verify_flash(esp, args)
 
 
 def version(args):
@@ -1142,7 +1162,7 @@ def main():
         if auto_detect:
             default = 'detect'
             choices.insert(0, 'detect')
-        parent.add_argument('--flash_size', '-fs', help='SPI Flash size in Mbit', type=str.lower,
+        parent.add_argument('--flash_size', '-fs', help='SPI Flash size in Mbit', type=lambda s: s.lower(),
                             choices=choices,
                             default=os.environ.get('ESPTOOL_FS', default))
 
@@ -1153,7 +1173,7 @@ def main():
                                     action=AddrFilenamePairAction)
     add_spi_flash_subparsers(parser_write_flash, auto_detect=True)
     parser_write_flash.add_argument('--no-progress', '-p', help='Suppress progress output', action="store_true")
-    parser_write_flash.add_argument('--verify', help='Verify just-written data (only necessary if very cautious, data is already CRCed', action='store_true')
+    parser_write_flash.add_argument('--verify', help='Verify just-written data on flash (recommended if concerned about flash integrity)', action='store_true')
 
     subparsers.add_parser(
         'run',
@@ -1207,6 +1227,7 @@ def main():
                                      action=AddrFilenamePairAction)
     parser_verify_flash.add_argument('--diff', '-d', help='Show differences',
                                      choices=['no', 'yes'], default='no')
+    add_spi_flash_subparsers(parser_verify_flash, auto_detect=True)
 
     subparsers.add_parser(
         'erase_flash',
@@ -1216,7 +1237,7 @@ def main():
         'version', help='Print esptool version')
 
     # internal sanity check - every operation matches a module function of the same name
-    for operation in list(subparsers.choices.keys()):
+    for operation in subparsers.choices.keys():
         assert operation in globals(), "%s should be a module function" % operation
 
     args = parser.parse_args()
@@ -1226,8 +1247,12 @@ def main():
     # operation function can take 1 arg (args), 2 args (esp, arg)
     # or be a member function of the ESPROM class.
 
+    if args.operation is None:
+        parser.print_help()
+        sys.exit(1)
+
     operation_func = globals()[args.operation]
-    operation_args = inspect.getfullargspec(operation_func).args
+    operation_args,_,_,_,_,_,_ = inspect.getfullargspec(operation_func)
     if operation_args[0] == 'esp':  # operation function takes an ESPROM connection object
         initial_baud = min(ESPROM.ESP_ROM_BAUD, args.baud)  # don't sync faster than the default baud rate
         esp = ESPROM(args.port, initial_baud)
@@ -1248,7 +1273,7 @@ class AddrFilenamePairAction(argparse.Action):
         for i in range(0,len(values),2):
             try:
                 address = int(values[i],0)
-            except ValueError:
+            except ValueError as e:
                 raise argparse.ArgumentError(self,'Address "%s" must be a number' % values[i])
             try:
                 argfile = open(values[i + 1], 'rb')
@@ -1258,6 +1283,7 @@ class AddrFilenamePairAction(argparse.Action):
                 raise argparse.ArgumentError(self,'Must be pairs of an address and the binary filename to write there')
             pairs.append((address, argfile))
         setattr(namespace, self.dest, pairs)
+
 
 # This is "wrapped" stub_flasher.c, to  be loaded using run_stub.
 _CESANTA_FLASHER_STUB = """\

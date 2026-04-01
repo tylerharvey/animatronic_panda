@@ -396,21 +396,30 @@ bool star_button_prev = false;
 
 #define PRECONDITION_DEBOUNCE_US 5000000U  // 5 seconds
 #define PRECONDITION_NAV_OVERRIDE_US 90000000U  // 90 seconds
-#define PRECONDITION_START_TICKS 10U
-#define PRECONDITION_STOP_PHASE1_TICKS 2U  // all zeros
-#define PRECONDITION_STOP_PHASE2_TICKS 3U  // second message
+#define PRECONDITION_START_PHASE1_TICKS 3U // 4003 message
+#define PRECONDITION_START_PHASE2_TICKS 3U // E007 message
+#define PRECONDITION_STOP_PHASE1_TICKS 3U  // 0000 message
+#define PRECONDITION_STOP_PHASE2_TICKS 3U  // E007 message
 #define PRECONDITION_RETRY_US 10000000U  // 10 seconds
 #define PRECONDITION_MAX_RETRIES 10U
 
-void send_precondition_start_msg(void) {
-  // send FF00004003000000 to 0x0C7 on CAR_BUS
+void send_precondition_start_msg(uint8_t ticks_remaining) {
   CAN_FIFOMailBox_TypeDef packet;
   packet.RIR = ADDR_TO_RIR(0x0C7U);
   packet.RDTR = 8U;  // DLC = 8
-  // bytes 0-3: FF 00 00 40
-  packet.RDLR = 0x400000FFU;
-  // bytes 4-7: 03 00 00 00
-  packet.RDHR = 0x00000003U;
+  if (ticks_remaining > PRECONDITION_START_PHASE2_TICKS) {
+    // send 0000004003000000 to 0x0C7
+    // bytes 0-3: 00 00 00 40
+    packet.RDLR = 0x40000000U;
+    // bytes 4-7: 03 00 00 00
+    packet.RDHR = 0x00000003U;
+  } else {
+    // send 000000E007000000 to 0x0C7
+    // bytes 0-3: 00 00 00 E0
+    packet.RDLR = 0xE0000000U;
+    // bytes 4-7: 07 00 00 00
+    packet.RDHR = 0x00000007U;
+  }
   can_send(&packet, CAR_BUS, true);
 }
 
@@ -478,7 +487,7 @@ void precondition_can_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
         precondition_enabled = true;
         precondition_requested_ts = now;
         precondition_last_attempt_ts = now;
-        precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
+        precondition_start_ticks_remaining = PRECONDITION_START_PHASE1_TICKS + PRECONDITION_START_PHASE2_TICKS;
         precondition_confirmed = false;
         precondition_retries = 0U;
       } else if (get_ts_elapsed(now, precondition_requested_ts) > PRECONDITION_DEBOUNCE_US) {
@@ -504,7 +513,7 @@ void precondition_tick(void) {
       && precondition_retries < PRECONDITION_MAX_RETRIES
       && get_ts_elapsed(now, precondition_last_attempt_ts) > PRECONDITION_RETRY_US) {
     precondition_last_attempt_ts = now;
-    precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
+    precondition_start_ticks_remaining = PRECONDITION_START_PHASE1_TICKS + PRECONDITION_START_PHASE2_TICKS;
     precondition_retries++;
   }
 
@@ -520,7 +529,7 @@ void precondition_tick(void) {
 
   // send initial burst of start messages
   if (precondition_enabled && precondition_start_ticks_remaining > 0U) {
-    send_precondition_start_msg();
+    send_precondition_start_msg(precondition_start_ticks_remaining);
     precondition_start_ticks_remaining--;
   }
 

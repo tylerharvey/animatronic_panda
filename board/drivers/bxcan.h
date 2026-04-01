@@ -150,20 +150,26 @@ bool star_button_prev = false;
 
 #define PRECONDITION_DEBOUNCE_US 5000000U  // 5 seconds
 #define PRECONDITION_NAV_OVERRIDE_US 90000000U  // 90 seconds
-#define PRECONDITION_START_TICKS 10U
-#define PRECONDITION_STOP_PHASE1_TICKS 2U  // all zeros
-#define PRECONDITION_STOP_PHASE2_TICKS 3U  // second message
+#define PRECONDITION_START_PHASE1_TICKS 3U // 4003 message
+#define PRECONDITION_START_PHASE2_TICKS 3U // E007 message
+#define PRECONDITION_STOP_PHASE1_TICKS 3U  // 0000 message
+#define PRECONDITION_STOP_PHASE2_TICKS 3U  // E007 message
 #define PRECONDITION_RETRY_US 10000000U  // 10 seconds
 #define PRECONDITION_MAX_RETRIES 10U
 
-void send_precondition_start_msg(void) {
-  // send FF00004003000000 to 0x0C7
+void send_precondition_start_msg(uint8_t ticks_remaining) {
   CANPacket_t packet = {0};
   packet.addr = 0x0C7U;
   packet.data_len_code = 8U;
-  packet.data[0] = 0xFFU;
-  packet.data[3] = 0x40U;
-  packet.data[4] = 0x03U;
+  if (ticks_remaining > PRECONDITION_START_PHASE2_TICKS) {
+    // send 0000004003000000 to 0x0C7
+    packet.data[3] = 0x40U;
+    packet.data[4] = 0x03U;
+  } else {
+    // send 000000E007000000 to 0x0C7
+    packet.data[3] = 0xE0U;
+    packet.data[4] = 0x07U;
+  }
   can_set_checksum(&packet);
   can_send(&packet, CAR_BUS, true);
 }
@@ -231,7 +237,7 @@ void precondition_can_rx_hook(CANPacket_t *to_push) {
         precondition_enabled = true;
         precondition_requested_ts = now;
         precondition_last_attempt_ts = now;
-        precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
+        precondition_start_ticks_remaining = PRECONDITION_START_PHASE1_TICKS + PRECONDITION_START_PHASE2_TICKS;
         precondition_confirmed = false;
         precondition_retries = 0U;
       } else if (get_ts_elapsed(now, precondition_requested_ts) > PRECONDITION_DEBOUNCE_US) {
@@ -257,7 +263,7 @@ void precondition_tick(void) {
       && precondition_retries < PRECONDITION_MAX_RETRIES
       && get_ts_elapsed(now, precondition_last_attempt_ts) > PRECONDITION_RETRY_US) {
     precondition_last_attempt_ts = now;
-    precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
+    precondition_start_ticks_remaining = PRECONDITION_START_PHASE1_TICKS + PRECONDITION_START_PHASE2_TICKS;
     precondition_retries++;
   }
 
@@ -273,7 +279,7 @@ void precondition_tick(void) {
 
   // send initial burst of start messages
   if (precondition_enabled && precondition_start_ticks_remaining > 0U) {
-    send_precondition_start_msg();
+    send_precondition_start_msg(precondition_start_ticks_remaining);
     precondition_start_ticks_remaining--;
   }
 

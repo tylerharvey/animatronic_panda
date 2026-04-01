@@ -149,7 +149,6 @@ bool precondition_stop_confirmed = true;
 bool star_button_prev = false;
 
 #define PRECONDITION_DEBOUNCE_US 5000000U  // 5 seconds
-#define PRECONDITION_NAV_OVERRIDE_US 90000000U  // 90 seconds
 #define PRECONDITION_START_PHASE1_TICKS 3U // 4003 message
 #define PRECONDITION_START_PHASE2_TICKS 3U // E007 message
 #define PRECONDITION_STOP_PHASE1_TICKS 3U  // 0000 message
@@ -187,22 +186,27 @@ void send_precondition_stop_msg(uint8_t ticks_remaining) {
   can_send(&packet, CAR_BUS, true);
 }
 
-// intercept NAV messages on 0x4ED during the first 90s since preconditioning was requested
+// intercept NAV messages on 0x4ED while precondition is requested,
 // respond with the same message but replace the last 3 bytes with 10 A0 00
-void precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
-  // only modify messages going to the car, with the correct address, and within the time limit when precondition is active
+// Returns whether to actually forward the message.
+bool precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
+  if (precondition_enabled && to_send->addr == 0x0C7U && bus_fwd_num == CAR_BUS) {
+    // block 0x0C7 messages from the head unit while preconditioning is requested
+    return false;
+  }
+  
+  // only modify messages when precondition is requested, the message is going to the car, with the correct address
   if (!precondition_enabled || to_send->addr != 0x4EDU || bus_fwd_num != CAR_BUS) {
-    return;
+    // don't modify, but still forward the message
+    return true;
   }
-  uint32_t elapsed = get_ts_elapsed(microsecond_timer_get(), precondition_requested_ts);
-  if (elapsed > PRECONDITION_NAV_OVERRIDE_US) {
-    return;
-  }
+
   to_send->data[5] = 0x10U;
   to_send->data[6] = 0xA0U;
   to_send->data[7] = 0x00U;
   can_set_checksum(to_send);
   // normal forwarding logic will do the send
+  return true;
 }
 
 void precondition_can_rx_hook(CANPacket_t *to_push) {
@@ -334,10 +338,10 @@ void can_rx(uint8_t can_number) {
       (void)memcpy(to_send.data, to_push.data, dlc_to_len[to_push.data_len_code]);
       can_set_checksum(&to_send);
 
-      precondition_fwd_hook(&to_send, bus_fwd_num);
-      
-      can_send(&to_send, bus_fwd_num, true);
-      can_health[can_number].total_fwd_cnt += 1U;
+      if (precondition_fwd_hook(&to_send, bus_fwd_num)) {
+        can_send(&to_send, bus_fwd_num, true);
+        can_health[can_number].total_fwd_cnt += 1U;
+      }
     }
 
     safety_rx_invalid += safety_rx_hook(&to_push) ? 0U : 1U;

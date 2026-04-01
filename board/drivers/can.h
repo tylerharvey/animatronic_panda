@@ -395,7 +395,6 @@ bool precondition_stop_confirmed = true;
 bool star_button_prev = false;
 
 #define PRECONDITION_DEBOUNCE_US 5000000U  // 5 seconds
-#define PRECONDITION_NAV_OVERRIDE_US 90000000U  // 90 seconds
 #define PRECONDITION_START_PHASE1_TICKS 3U // 4003 message
 #define PRECONDITION_START_PHASE2_TICKS 3U // E007 message
 #define PRECONDITION_STOP_PHASE1_TICKS 3U  // 0000 message
@@ -440,19 +439,26 @@ void send_precondition_stop_msg(uint8_t ticks_remaining) {
   can_send(&packet, CAR_BUS, true);
 }
 
-// intercept NAV messages on 0x4ED during the first 90s since preconditioning was requested
+// intercept NAV messages on 0x4ED while precondition is requested,
 // respond with the same message but replace the last 3 bytes with 10 A0 00
-void precondition_fwd_hook(CAN_FIFOMailBox_TypeDef *to_send, int bus_fwd_num) {
+// Returns whether to actually forward the message.
+bool precondition_fwd_hook(CAN_FIFOMailBox_TypeDef *to_send, int bus_fwd_num) {
+  if (precondition_enabled && GET_ADDR(to_send) == 0x0C7U && bus_fwd_num == CAR_BUS) {
+    // block 0x0C7 messages from the head unit while preconditioning is requested
+    return false;
+  }
+
+  // only modify messages when precondition is requested, the message is going to the car, with the correct address
   if (!precondition_enabled || GET_ADDR(to_send) != 0x4EDU || bus_fwd_num != CAR_BUS) {
-    return;
+    // don't modify, but still forward the message
+    return true;
   }
-  uint32_t elapsed = get_ts_elapsed(TIM2->CNT, precondition_requested_ts);
-  if (elapsed > PRECONDITION_NAV_OVERRIDE_US) {
-    return;
-  }
+
   // modify bytes 5-7: byte5=0x10, byte6=0xA0, byte7=0x00
   // RDHR holds bytes 4-7: keep byte 4, replace bytes 5-7
   to_send->RDHR = (to_send->RDHR & 0xFFU) | (0x10U << 8) | (0xA0U << 16) | (0x00U << 24);
+  // normal forwarding logic will do the send
+  return true;
 }
 
 void precondition_can_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
@@ -572,9 +578,9 @@ void can_rx(uint8_t can_number) {
       to_send.RDLR = to_push.RDLR;
       to_send.RDHR = to_push.RDHR;
 
-      precondition_fwd_hook(&to_send, bus_fwd_num);
-
-      can_send(&to_send, bus_fwd_num, true);
+      if (precondition_fwd_hook(&to_send, bus_fwd_num)) {
+        can_send(&to_send, bus_fwd_num, true);
+      }
     }
 
     can_rx_errs += safety_rx_hook(&to_push) ? 0U : 1U;

@@ -671,13 +671,21 @@ void __attribute__ ((noinline)) enable_fpu(void) {
 #define EON_HEARTBEAT_IGNITION_CNT_ON 5U
 #define EON_HEARTBEAT_IGNITION_CNT_OFF 2U
 
+// called at 25Hz (every 40ms)
+void TIM8_UP_TIM13_IRQ_Handler(void) {
+  if (TIM13->SR != 0) {
+    // 0x0C7 messages should go at ~25Hz.
+    precondition_tick();
+    TIM13->SR = 0;
+  }
+}
+
 // called at 8Hz
 uint8_t loop_counter = 0U;
 void TIM1_BRK_TIM9_IRQ_Handler(void) {
   if (TIM9->SR != 0) {
     // siren
     current_board->set_siren((loop_counter & 1U) && siren_enabled);
-    precondition_tick();
 
     // decimated to 1Hz
     if(loop_counter == 0U){
@@ -847,6 +855,12 @@ int main(void) {
 #ifndef EON
   spi_init();
 #endif
+
+  // 25Hz timer (40ms)
+  // TIM13 is on APB1; timer clock = 48MHz (PPRE1_DIV4 * 2).
+  // 48MHz / (29 * 65536) ~= 25Hz
+  timer_init(TIM13, 29);
+  NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
 
   // 8hz
   timer_init(TIM9, 183);

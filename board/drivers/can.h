@@ -493,7 +493,7 @@ void precondition_can_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
   }
 }
 
-// called every 125ms by tick handler in main.c
+// called every 40ms by fast_tick_handler in main.c
 void precondition_tick(void) {
   uint32_t now = TIM2->CNT;
 

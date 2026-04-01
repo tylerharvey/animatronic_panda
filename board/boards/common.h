@@ -70,6 +70,7 @@ void peripherals_init(void){
   RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
   RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
   RCC->APB2ENR |= RCC_APB2ENR_TIM9EN;  // slow loop
+  RCC->APB1ENR |= RCC_APB1ENR_TIM13EN;  // fast tick timer
 }
 
 // Detection with internal pullup

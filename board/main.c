@@ -142,6 +142,15 @@ static void __attribute__ ((noinline)) enable_fpu(void) {
 #define HEARTBEAT_IGNITION_CNT_ON 5U
 #define HEARTBEAT_IGNITION_CNT_OFF 2U
 
+// called at 25Hz (every 40ms)
+static void fast_tick_handler(void) {
+  if (FAST_TICK_TIMER->SR != 0U) {
+    // 0x0C7 messages should go at ~25Hz.
+    precondition_tick();
+    FAST_TICK_TIMER->SR = 0;
+  }
+}
+
 // called at 8Hz
 static void tick_handler(void) {
   static uint32_t siren_countdown = 0; // siren plays while countdown > 0
@@ -159,7 +168,6 @@ static void tick_handler(void) {
     harness_tick();
     simple_watchdog_kick();
     sound_tick();
-    precondition_tick();
 
     // re-init everything that uses harness status
     if (harness.status != prev_harness_status) {
@@ -347,6 +355,10 @@ int main(void) {
 
   // init watchdog for heartbeat loop, fed at 8Hz
   simple_watchdog_init(FAULT_HEARTBEAT_LOOP_WATCHDOG, (3U * 1000000U / 8U));
+
+  // 25Hz timer (40ms)
+  REGISTER_INTERRUPT(FAST_TICK_TIMER_IRQ, fast_tick_handler, 30U, FAULT_INTERRUPT_RATE_FAST_TICK)
+  fast_tick_timer_init();
 
   // 8Hz timer
   REGISTER_INTERRUPT(TICK_TIMER_IRQ, tick_handler, 10U, FAULT_INTERRUPT_RATE_TICK)

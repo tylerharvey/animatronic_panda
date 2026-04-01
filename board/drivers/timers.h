@@ -29,3 +29,8 @@ void tick_timer_init(void) {
   timer_init(TICK_TIMER, (uint16_t)((15.25*APB2_TIMER_FREQ)/8U));
   NVIC_EnableIRQ(TICK_TIMER_IRQ);
 }
+
+void fast_tick_timer_init(void) {
+  timer_init(FAST_TICK_TIMER, (uint16_t)((15.25*APB1_TIMER_FREQ)/25U));
+  NVIC_EnableIRQ(FAST_TICK_TIMER_IRQ);
+}

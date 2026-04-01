@@ -246,7 +246,7 @@ void precondition_can_rx_hook(CANPacket_t *to_push) {
   }
 }
 
-// called every 125ms by tick_handler in main.c
+// called every 40ms by fast_tick_handler in main.c
 void precondition_tick(void) {
   uint32_t now = microsecond_timer_get();
 

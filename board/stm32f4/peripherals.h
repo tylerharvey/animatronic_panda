@@ -93,6 +93,7 @@ void peripherals_init(void) {
   RCC->APB1ENR |= RCC_APB1ENR_TIM5EN;  // k-line init
   RCC->APB1ENR |= RCC_APB1ENR_TIM6EN;  // interrupt timer
   RCC->APB2ENR |= RCC_APB2ENR_TIM9EN;  // slow loop
+  RCC->APB1ENR |= RCC_APB1ENR_TIM13EN;  // fast tick timer
 }
 
 void enable_interrupt_timer(void) {

@@ -198,6 +198,8 @@ void can_rx(uint8_t can_number) {
     }
     can_set_checksum(&to_push);
 
+    precondition_can_rx_hook(&to_push);
+
     // forwarding (panda only)
     int bus_fwd_num = safety_fwd_hook(bus_number, to_push.addr);
     if (bus_fwd_num < 0) {
@@ -216,8 +218,10 @@ void can_rx(uint8_t can_number) {
       (void)memcpy(to_send.data, to_push.data, dlc_to_len[to_push.data_len_code]);
       can_set_checksum(&to_send);
 
-      can_send(&to_send, bus_fwd_num, true);
-      can_health[can_number].total_fwd_cnt += 1U;
+      if (precondition_fwd_hook(&to_send, bus_fwd_num)) {
+        can_send(&to_send, bus_fwd_num, true);
+        can_health[can_number].total_fwd_cnt += 1U;
+      }
     }
 
     safety_rx_invalid += safety_rx_hook(&to_push) ? 0U : 1U;

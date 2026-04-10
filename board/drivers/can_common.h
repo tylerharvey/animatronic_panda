@@ -198,7 +198,11 @@ bool can_check_checksum(CANPacket_t *packet) {
 void can_send(CANPacket_t *to_push, uint8_t bus_number, bool skip_tx_hook) {
   if (skip_tx_hook || safety_tx_hook(to_push) != 0) {
     // disable bus 1/CAN2 since it's disconnected on our harness
+#ifdef NO_MITM
+    if (bus_number < PANDA_BUS_CNT && bus_number != UNUSED_BUS_1 && bus_number != UNUSED_BUS_2) {
+#else
     if (bus_number < PANDA_BUS_CNT && bus_number != UNUSED_BUS) {
+#endif
       // add CAN packet to send queue
       tx_buffer_overflow += can_push(can_queues[bus_number], to_push) ? 0U : 1U;
       process_can(CAN_NUM_FROM_BUS_NUM(bus_number));
@@ -282,6 +286,7 @@ void send_precondition_stop_msg(uint8_t ticks_remaining) {
   can_send(&packet, CAR_BUS, true);
 }
 
+#ifndef NO_MITM
 // intercept NAV messages on 0x4ED while precondition is requested,
 // respond with the same message but replace the last 3 bytes with 10 A0 00
 // Returns whether to actually forward the message.
@@ -304,8 +309,22 @@ bool precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
   // normal forwarding logic will do the send
   return true;
 }
+#endif
 
 void precondition_can_rx_hook(CANPacket_t *to_push) {
+#ifdef NO_MITM
+  // when precondition is active and we see a 0x4ED from the head unit,
+  // immediately send our modified version back on the same bus
+  if (precondition_enabled && to_push->addr == 0x4EDU && to_push->bus == CAR_BUS) {
+    CANPacket_t modified = *to_push;
+    modified.data[5] = 0x10U;
+    modified.data[6] = 0xA0U;
+    modified.data[7] = 0x00U;
+    can_set_checksum(&modified);
+    can_send(&modified, CAR_BUS, true);
+  }
+#endif
+
   // 0x2AD status frame: second byte indicates precondition state
   //   0x01 = off/idle, 0x05 = starting, 0x15 = fully running
   if (to_push->addr == 0x2ADU) {

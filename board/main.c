@@ -347,7 +347,11 @@ int main(void) {
 
   // init to ALLOUTPUT with heartbeat disabled, since
   // we'll be running this in headless mode
+#ifdef NO_MITM
+  set_safety_mode(SAFETY_ALLOUTPUT, 0U);  // param 0 = disable forwarding
+#else
   set_safety_mode(SAFETY_ALLOUTPUT, 1U);  // param 1 = passthrough (enables forwarding)
+#endif
   heartbeat_disabled = true;
 
   // enable CAN TXs

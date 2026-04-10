@@ -21,6 +21,9 @@ else:
   if os.getenv("DEBUG"):
     common_flags += ["-DDEBUG"]
 
+if os.getenv("NO_MITM"):
+  common_flags += ["-DNO_MITM"]
+
 def objcopy(source, target, env, for_signature):
     return '$OBJCOPY -O binary %s %s' % (source[0], target[0])
 

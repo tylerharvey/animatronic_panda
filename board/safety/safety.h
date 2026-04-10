@@ -226,6 +226,11 @@ bool safety_tx_hook(CANPacket_t *msg) {
 }
 
 static int get_fwd_bus(int bus_num) {
+#ifdef NO_MITM
+  (void)bus_num;  // intentionally unused
+  // this branch is for when we are not MITMing, so we can't forward.
+  return -1;
+#else
   int destination_bus;
   if (bus_num == HEAD_UNIT_BUS) {
     destination_bus = CAR_BUS;
@@ -235,6 +240,7 @@ static int get_fwd_bus(int bus_num) {
     destination_bus = -1;
   }
   return destination_bus;
+#endif
 }
 
 int safety_fwd_hook(int bus_num, int addr) {

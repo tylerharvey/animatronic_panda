@@ -241,8 +241,10 @@ uint8_t precondition_start_ticks_remaining = 0U;
 uint8_t precondition_stop_ticks_remaining = 0U;
 // number of times we've retried sending precondition messages, used for retry logic
 uint8_t precondition_retries = 0U;
-// has preconditioning been confirmed by the 2AD status frame?
-bool precondition_confirmed = false;
+// has preconditioning been confirmed to be starting by the 2AD status frame?
+bool precondition_starting_confirmed = false;
+// has preconditioning been confirmed to be active by the 2AD status frame?
+bool precondition_started_confirmed = false;
 // has precondition stop been confirmed by the 2AD status frame?
 bool precondition_stop_confirmed = true;
 // track previous state of star button for edge detection
@@ -251,10 +253,13 @@ bool star_button_prev = false;
 #define PRECONDITION_DEBOUNCE_US 5000000U  // 5 seconds
 #define PRECONDITION_START_PHASE1_TICKS 3U // 4003 message
 #define PRECONDITION_START_PHASE2_TICKS 3U // E007 message
+#define PRECONDITION_START_TICKS (PRECONDITION_START_PHASE1_TICKS + PRECONDITION_START_PHASE2_TICKS)
 #define PRECONDITION_STOP_PHASE1_TICKS 3U  // 0000 message
 #define PRECONDITION_STOP_PHASE2_TICKS 3U  // E007 message
+#define PRECONDITION_STOP_TICKS (PRECONDITION_STOP_PHASE1_TICKS + PRECONDITION_STOP_PHASE2_TICKS)
 #define PRECONDITION_RETRY_US 10000000U  // 10 seconds
 #define PRECONDITION_MAX_RETRIES 10U
+#define PRECONDITION_STARTED_TIMEOUT_US 80000000U  // 80 seconds
 
 void send_precondition_start_msg(uint8_t ticks_remaining) {
   CANPacket_t packet = {0};
@@ -311,6 +316,24 @@ bool precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
 }
 #endif
 
+void start_preconditioning(uint32_t now) {
+  precondition_enabled = true;
+  precondition_requested_ts = now;
+  precondition_last_attempt_ts = now;
+  precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
+  precondition_starting_confirmed = false;
+  precondition_started_confirmed = false;
+  precondition_retries = 0U;
+}
+
+void stop_preconditioning(uint32_t now) {
+  precondition_enabled = false;
+  precondition_last_attempt_ts = now;
+  precondition_stop_ticks_remaining = PRECONDITION_STOP_TICKS;
+  precondition_stop_confirmed = false;
+  precondition_retries = 0U;
+}
+
 void precondition_can_rx_hook(CANPacket_t *to_push) {
 #ifdef NO_MITM
   // when precondition is active and we see a 0x4ED from the head unit,
@@ -329,9 +352,33 @@ void precondition_can_rx_hook(CANPacket_t *to_push) {
   //   0x01 = off/idle, 0x05 = starting, 0x15 = fully running
   if (to_push->addr == 0x2ADU) {
     uint8_t status = to_push->data[1];
-    if (precondition_enabled && !precondition_confirmed) {
+    if (precondition_enabled && !precondition_starting_confirmed) {
       if (status == 0x05U || status == 0x15U) {
-        precondition_confirmed = true;
+        precondition_starting_confirmed = true;
+      }
+    }
+    if (precondition_enabled && !precondition_started_confirmed) {
+      if (status == 0x15U) {
+        precondition_started_confirmed = true;
+      }
+    }
+    if (precondition_enabled && precondition_started_confirmed) {
+      if (status == 0x05U) {
+        // preconditioning was previously fully active, but now it's only showing as starting.
+        // this is a weird situation to be in; let's just reset the current attempt time,
+        // and let the retry logic continue as normal if it doesn't resolve itself after a while
+        precondition_last_attempt_ts = microsecond_timer_get();
+        precondition_started_confirmed = false;
+      }
+      if (status == 0x01U) {
+        // preconditioning was previously fully active, but now it's showing as off.
+        // it's possible that the car has reached the (rare) "Precondition complete" state.
+        // until we have a better way to distinguish that state from a real failure mode (TODO(ejones)),
+        // let's just assume everything is fine and reset our state
+        uint32_t now = microsecond_timer_get();
+        stop_preconditioning(now);
+        precondition_stop_ticks_remaining = 0U;
+        precondition_stop_confirmed = true;
       }
     }
     if (!precondition_enabled && !precondition_stop_confirmed && precondition_stop_ticks_remaining == 0U) {
@@ -353,18 +400,9 @@ void precondition_can_rx_hook(CANPacket_t *to_push) {
     if (star_button && !star_button_prev) {
       uint32_t now = microsecond_timer_get();
       if (!precondition_enabled) {
-        precondition_enabled = true;
-        precondition_requested_ts = now;
-        precondition_last_attempt_ts = now;
-        precondition_start_ticks_remaining = PRECONDITION_START_PHASE1_TICKS + PRECONDITION_START_PHASE2_TICKS;
-        precondition_confirmed = false;
-        precondition_retries = 0U;
+        start_preconditioning(now);
       } else if (get_ts_elapsed(now, precondition_requested_ts) > PRECONDITION_DEBOUNCE_US) {
-        precondition_enabled = false;
-        precondition_last_attempt_ts = now;
-        precondition_stop_ticks_remaining = PRECONDITION_STOP_PHASE1_TICKS + PRECONDITION_STOP_PHASE2_TICKS;
-        precondition_stop_confirmed = false;
-        precondition_retries = 0U;
+        stop_preconditioning(now);
       }
     }
     star_button_prev = star_button;
@@ -374,15 +412,35 @@ void precondition_can_rx_hook(CANPacket_t *to_push) {
 // called every 40ms by fast_tick_handler in main.c
 void precondition_tick(void) {
   uint32_t now = microsecond_timer_get();
+  uint32_t time_since_last_attempt = get_ts_elapsed(now, precondition_last_attempt_ts);
 
-  // retry start if not confirmed
-  if (precondition_enabled && !precondition_confirmed
+  // give up and send one stop attempt if start retries exhausted
+  if (precondition_enabled
       && precondition_start_ticks_remaining == 0U
-      // TODO(ejones): if we go through all our retries, maybe we should reset precondition_enabled to false and require the user to press the button again...
+      && precondition_retries >= PRECONDITION_MAX_RETRIES
+      && ((!precondition_starting_confirmed && time_since_last_attempt > PRECONDITION_RETRY_US)
+          || (!precondition_started_confirmed && time_since_last_attempt > PRECONDITION_STARTED_TIMEOUT_US))) {
+    stop_preconditioning(now);
+    precondition_retries = PRECONDITION_MAX_RETRIES;  // don't retry the stop; this is a failure case already
+  }
+
+  // retry start if not confirmed to be starting yet and it's been long enough
+  if (precondition_enabled && !precondition_starting_confirmed
+      && precondition_start_ticks_remaining == 0U
       && precondition_retries < PRECONDITION_MAX_RETRIES
-      && get_ts_elapsed(now, precondition_last_attempt_ts) > PRECONDITION_RETRY_US) {
+      && time_since_last_attempt > PRECONDITION_RETRY_US) {
     precondition_last_attempt_ts = now;
-    precondition_start_ticks_remaining = PRECONDITION_START_PHASE1_TICKS + PRECONDITION_START_PHASE2_TICKS;
+    precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
+    precondition_retries++;
+  }
+
+  // retry start if not confirmed to be started yet and it's been long enough (i.e. we got 2AD 05 but not 15 after a long time)
+  if (precondition_enabled && !precondition_started_confirmed
+      && precondition_start_ticks_remaining == 0U
+      && precondition_retries < PRECONDITION_MAX_RETRIES
+      && time_since_last_attempt > PRECONDITION_STARTED_TIMEOUT_US) {
+    precondition_last_attempt_ts = now;
+    precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
     precondition_retries++;
   }
 
@@ -390,9 +448,9 @@ void precondition_tick(void) {
   if (!precondition_enabled && !precondition_stop_confirmed
       && precondition_stop_ticks_remaining == 0U
       && precondition_retries < PRECONDITION_MAX_RETRIES
-      && get_ts_elapsed(now, precondition_last_attempt_ts) > PRECONDITION_RETRY_US) {
+      && time_since_last_attempt > PRECONDITION_RETRY_US) {
     precondition_last_attempt_ts = now;
-    precondition_stop_ticks_remaining = PRECONDITION_STOP_PHASE1_TICKS + PRECONDITION_STOP_PHASE2_TICKS;
+    precondition_stop_ticks_remaining = PRECONDITION_STOP_TICKS;
     precondition_retries++;
   }
 
@@ -403,7 +461,7 @@ void precondition_tick(void) {
   }
 
   // send initial burst of stop messages
-  if (precondition_stop_ticks_remaining > 0U) {
+  if (!precondition_enabled && precondition_stop_ticks_remaining > 0U) {
     send_precondition_stop_msg(precondition_stop_ticks_remaining);
     precondition_stop_ticks_remaining--;
   }

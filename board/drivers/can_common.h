@@ -230,6 +230,12 @@ bool is_speed_valid(uint32_t speed, const uint32_t *all_speeds, uint8_t len) {
 
 // ********************* precondition logic *********************
 
+typedef enum {
+  FWD_BLOCK,
+  FWD_MODIFIED,
+  FWD_PASSTHROUGH,
+} fwd_result_t;
+
 // is the user currently requesting preconditioning to be active?
 bool precondition_requested = false;
 // timestamp of when the user requested preconditioning
@@ -291,30 +297,27 @@ void send_precondition_stop_msg(uint8_t ticks_remaining) {
   can_send(&packet, CAR_BUS, true);
 }
 
-#ifndef NO_MITM
-// intercept NAV messages on 0x4ED while precondition is requested,
-// respond with the same message but replace the last 3 bytes with 10 A0 00
-// Returns whether to actually forward the message.
-bool precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
+// Decide whether to block, modify, or passthrough a message for preconditioning.
+// Modifies packet data in-place when returning FWD_MODIFIED.
+// When NO_MITM is defined, this only has an effect when FWD_MODIFIED is returned.
+fwd_result_t precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
+  // block 0x0C7 message so that the head unit doesn't turn off preconditioning on us  
   if (precondition_requested && to_send->addr == 0x0C7U && bus_fwd_num == CAR_BUS) {
-    // block 0x0C7 messages from the head unit while preconditioning is requested
-    return false;
+    return FWD_BLOCK;
   }
 
-  // only modify messages when precondition is requested, the message is going to the car, with the correct address
-  if (!precondition_requested || to_send->addr != 0x4EDU || bus_fwd_num != CAR_BUS) {
-    // don't modify, but still forward the message
-    return true;
+  // MITM 0x4ED message while preconditioning is requested
+  if (precondition_requested && to_send->addr == 0x4EDU && bus_fwd_num == CAR_BUS) {
+    to_send->data[5] = 0x10U;
+    to_send->data[6] = 0xA0U;
+    to_send->data[7] = 0x00U;
+    can_set_checksum(to_send);
+    return FWD_MODIFIED;
   }
 
-  to_send->data[5] = 0x10U;
-  to_send->data[6] = 0xA0U;
-  to_send->data[7] = 0x00U;
-  can_set_checksum(to_send);
-  // normal forwarding logic will do the send
-  return true;
+  // otherwise, passthrough without modification
+  return FWD_PASSTHROUGH;
 }
-#endif
 
 void start_preconditioning(uint32_t now) {
   precondition_requested = true;
@@ -335,19 +338,6 @@ void stop_preconditioning(uint32_t now) {
 }
 
 void precondition_can_rx_hook(CANPacket_t *to_push) {
-#ifdef NO_MITM
-  // when precondition is active and we see a 0x4ED from the head unit,
-  // immediately send our modified version back on the same bus
-  if (precondition_requested && to_push->addr == 0x4EDU && to_push->bus == CAR_BUS) {
-    CANPacket_t modified = *to_push;
-    modified.data[5] = 0x10U;
-    modified.data[6] = 0xA0U;
-    modified.data[7] = 0x00U;
-    can_set_checksum(&modified);
-    can_send(&modified, CAR_BUS, true);
-  }
-#endif
-
   // 0x2AD status frame: second byte indicates precondition state
   //   0x01 = off/idle, 0x05 = starting, 0x15 = fully running
   if (to_push->addr == 0x2ADU) {

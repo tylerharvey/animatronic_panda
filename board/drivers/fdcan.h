@@ -201,10 +201,14 @@ void can_rx(uint8_t can_number) {
     precondition_can_rx_hook(&to_push);
 
     // forwarding (panda only)
+#ifdef NO_MITM
+    int bus_fwd_num = CAR_BUS;
+#else
     int bus_fwd_num = safety_fwd_hook(bus_number, to_push.addr);
     if (bus_fwd_num < 0) {
       bus_fwd_num = bus_config[can_number].forwarding_bus;
     }
+#endif
     if (bus_fwd_num != -1) {
       CANPacket_t to_send;
 
@@ -218,15 +222,15 @@ void can_rx(uint8_t can_number) {
       (void)memcpy(to_send.data, to_push.data, dlc_to_len[to_push.data_len_code]);
       can_set_checksum(&to_send);
 
+      fwd_result_t fwd_result = precondition_fwd_hook(&to_send, bus_fwd_num);
 #ifdef NO_MITM
-      can_send(&to_send, bus_fwd_num, true);
-      can_health[can_number].total_fwd_cnt += 1U;
+      if (fwd_result == FWD_MODIFIED) {
 #else
-      if (precondition_fwd_hook(&to_send, bus_fwd_num)) {
+      if (fwd_result != FWD_BLOCK) {
+#endif
         can_send(&to_send, bus_fwd_num, true);
         can_health[can_number].total_fwd_cnt += 1U;
       }
-#endif
     }
 
     safety_rx_invalid += safety_rx_hook(&to_push) ? 0U : 1U;

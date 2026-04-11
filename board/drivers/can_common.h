@@ -228,6 +228,37 @@ bool is_speed_valid(uint32_t speed, const uint32_t *all_speeds, uint8_t len) {
   return ret;
 }
 
+// ********************* 0x4E8 distance/flag display *********************
+
+typedef enum {
+  DIST_UNIT_M = 0x0U,
+  DIST_UNIT_KM = 0x1U,
+  DIST_UNIT_MI = 0x2U,
+  DIST_UNIT_FT = 0x3U,
+  DIST_UNIT_YD = 0x4U,
+} dist_unit_t;
+
+typedef enum {
+  FLAG_DESTINATION = 0x0U,
+  FLAG_BLUE_1 = 0x1U,
+  FLAG_BLUE_2 = 0x2U,
+  FLAG_BLUE_3 = 0x3U,
+  FLAG_BLUE_4 = 0x4U,
+  FLAG_NONE = 0xFU,
+} flag_type_t;
+
+// Set data bytes on a 0x4E8 CANPacket_t to display a distance and flag.
+//   distance_int: integer part (0-65534, or 0xFFFF to hide number/unit)
+//   distance_tenths: tenths digit (0-9, only shown when unit is km or mi and integer < 100)
+//   unit: distance unit (see dist_unit_t)
+//   flag: flag icon (see flag_type_t)
+void set_0x4e8_distance_flag(CANPacket_t *packet, uint16_t distance_int, uint8_t distance_tenths, dist_unit_t unit, flag_type_t flag) {
+  packet->data[0] = (uint8_t)(((distance_tenths & 0xFU) << 4U) | (unit & 0xFU));
+  packet->data[4] = (uint8_t)(distance_int & 0xFFU);
+  packet->data[5] = (uint8_t)((distance_int >> 8U) & 0xFFU);
+  packet->data[6] = (packet->data[6] & 0xF0U) | (flag & 0xFU);
+}
+
 // ********************* precondition logic *********************
 
 typedef enum {
@@ -264,8 +295,16 @@ bool star_button_prev = false;
 #define PRECONDITION_STOP_PHASE2_TICKS 3U  // E007 message
 #define PRECONDITION_STOP_TICKS (PRECONDITION_STOP_PHASE1_TICKS + PRECONDITION_STOP_PHASE2_TICKS)
 #define PRECONDITION_RETRY_US 10000000U  // 10 seconds
-#define PRECONDITION_MAX_RETRIES 10U
-#define PRECONDITION_STARTED_TIMEOUT_US 80000000U  // 80 seconds
+#define PRECONDITION_MAX_RETRIES 4U
+#define PRECONDITION_STARTED_TIMEOUT_US 75000000U  // 75 seconds
+
+#define SECONDS_UNTIL_START(elapsed) \
+  (((elapsed) >= PRECONDITION_STARTED_TIMEOUT_US) ? 0U : \
+   ((PRECONDITION_STARTED_TIMEOUT_US - (elapsed)) / 1000000U))
+
+#define SECONDS_UNTIL_STOP_RETRY(elapsed) \
+  (((elapsed) >= PRECONDITION_RETRY_US) ? 0U : \
+   ((PRECONDITION_RETRY_US - (elapsed)) / 1000000U))
 
 void send_precondition_start_msg(uint8_t ticks_remaining) {
   CANPacket_t packet = {0};
@@ -313,6 +352,55 @@ fwd_result_t precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
     to_send->data[7] = 0x00U;
     can_set_checksum(to_send);
     return FWD_MODIFIED;
+  }
+
+  // we are currently starting preconditioning and want to display the countdown flag.
+  if (precondition_requested && !precondition_started_confirmed && bus_fwd_num == CAR_BUS) {
+    uint32_t now = microsecond_timer_get();
+    uint32_t time_since_last_attempt = get_ts_elapsed(now, precondition_last_attempt_ts);
+    if (to_send->addr == 0x4E8) {
+      set_0x4e8_distance_flag(
+        to_send, 
+        SECONDS_UNTIL_START(time_since_last_attempt),
+        // display retry count in tenths digit
+        precondition_retries % 10, 
+        DIST_UNIT_KM,
+        // switch to destination flag after we get 05 for 2AD
+        precondition_starting_confirmed ? FLAG_DESTINATION : FLAG_BLUE_1
+      );
+      can_set_checksum(to_send);
+      return FWD_MODIFIED;
+    }
+    
+    if (to_send->addr == 0x4CC) {
+      to_send->data[0] = 0x02U;
+      can_set_checksum(to_send);
+      return FWD_MODIFIED;
+    }
+  }
+
+  // we are currently try to stop preconditioning and want to display the retry status.
+  if (!precondition_requested && !precondition_stop_confirmed && precondition_retries < PRECONDITION_MAX_RETRIES && bus_fwd_num == CAR_BUS) {
+    uint32_t now = microsecond_timer_get();
+    uint32_t time_since_last_attempt = get_ts_elapsed(now, precondition_last_attempt_ts);
+    if (to_send->addr == 0x4E8) {
+      set_0x4e8_distance_flag(
+        to_send, 
+        SECONDS_UNTIL_STOP_RETRY(time_since_last_attempt),
+        // display retry count in tenths digit
+        precondition_retries % 10, 
+        DIST_UNIT_MI,
+        FLAG_NONE
+      );
+      can_set_checksum(to_send);
+      return FWD_MODIFIED;
+    }
+    
+    if (to_send->addr == 0x4CC) {
+      to_send->data[0] = 0x02U;
+      can_set_checksum(to_send);
+      return FWD_MODIFIED;
+    }
   }
 
   // otherwise, passthrough without modification

@@ -287,7 +287,7 @@ bool precondition_stop_confirmed = true;
 // track previous state of star button for edge detection
 bool star_button_prev = false;
 
-#define PRECONDITION_DEBOUNCE_US 5000000U  // 5 seconds
+#define PRECONDITION_DEBOUNCE_US 1000000U  // 1 second
 #define PRECONDITION_START_PHASE1_TICKS 3U // 4003 message
 #define PRECONDITION_START_PHASE2_TICKS 3U // E007 message
 #define PRECONDITION_START_TICKS (PRECONDITION_START_PHASE1_TICKS + PRECONDITION_START_PHASE2_TICKS)
@@ -296,7 +296,7 @@ bool star_button_prev = false;
 #define PRECONDITION_STOP_TICKS (PRECONDITION_STOP_PHASE1_TICKS + PRECONDITION_STOP_PHASE2_TICKS)
 #define PRECONDITION_RETRY_US 10000000U  // 10 seconds
 #define PRECONDITION_MAX_RETRIES 4U
-#define PRECONDITION_STARTED_TIMEOUT_US 75000000U  // 75 seconds
+#define PRECONDITION_STARTED_TIMEOUT_US 70000000U  // 70 seconds
 
 #define SECONDS_UNTIL_START(elapsed) \
   (((elapsed) >= PRECONDITION_STARTED_TIMEOUT_US) ? 0U : \
@@ -364,7 +364,7 @@ fwd_result_t precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
         SECONDS_UNTIL_START(time_since_last_attempt),
         // display retry count in tenths digit
         precondition_retries % 10, 
-        DIST_UNIT_KM,
+        precondition_retries == 0 ? DIST_UNIT_YD : DIST_UNIT_KM,
         // switch to destination flag after we get 05 for 2AD
         precondition_starting_confirmed ? FLAG_DESTINATION : FLAG_BLUE_1
       );
@@ -389,7 +389,7 @@ fwd_result_t precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
         SECONDS_UNTIL_STOP_RETRY(time_since_last_attempt),
         // display retry count in tenths digit
         precondition_retries % 10, 
-        DIST_UNIT_MI,
+        precondition_retries == 0 ? DIST_UNIT_FT : DIST_UNIT_MI,
         FLAG_NONE
       );
       can_set_checksum(to_send);

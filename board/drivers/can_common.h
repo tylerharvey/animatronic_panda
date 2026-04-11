@@ -231,7 +231,7 @@ bool is_speed_valid(uint32_t speed, const uint32_t *all_speeds, uint8_t len) {
 // ********************* precondition logic *********************
 
 // is the user currently requesting preconditioning to be active?
-bool precondition_enabled = false;
+bool precondition_requested = false;
 // timestamp of when the user requested preconditioning
 uint32_t precondition_requested_ts = 0U;
 // timestamp of last attempt to send precondition message, used for retry logic
@@ -296,13 +296,13 @@ void send_precondition_stop_msg(uint8_t ticks_remaining) {
 // respond with the same message but replace the last 3 bytes with 10 A0 00
 // Returns whether to actually forward the message.
 bool precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
-  if (precondition_enabled && to_send->addr == 0x0C7U && bus_fwd_num == CAR_BUS) {
+  if (precondition_requested && to_send->addr == 0x0C7U && bus_fwd_num == CAR_BUS) {
     // block 0x0C7 messages from the head unit while preconditioning is requested
     return false;
   }
 
   // only modify messages when precondition is requested, the message is going to the car, with the correct address
-  if (!precondition_enabled || to_send->addr != 0x4EDU || bus_fwd_num != CAR_BUS) {
+  if (!precondition_requested || to_send->addr != 0x4EDU || bus_fwd_num != CAR_BUS) {
     // don't modify, but still forward the message
     return true;
   }
@@ -317,7 +317,7 @@ bool precondition_fwd_hook(CANPacket_t *to_send, uint8_t bus_fwd_num) {
 #endif
 
 void start_preconditioning(uint32_t now) {
-  precondition_enabled = true;
+  precondition_requested = true;
   precondition_requested_ts = now;
   precondition_last_attempt_ts = now;
   precondition_start_ticks_remaining = PRECONDITION_START_TICKS;
@@ -327,7 +327,7 @@ void start_preconditioning(uint32_t now) {
 }
 
 void stop_preconditioning(uint32_t now) {
-  precondition_enabled = false;
+  precondition_requested = false;
   precondition_last_attempt_ts = now;
   precondition_stop_ticks_remaining = PRECONDITION_STOP_TICKS;
   precondition_stop_confirmed = false;
@@ -338,7 +338,7 @@ void precondition_can_rx_hook(CANPacket_t *to_push) {
 #ifdef NO_MITM
   // when precondition is active and we see a 0x4ED from the head unit,
   // immediately send our modified version back on the same bus
-  if (precondition_enabled && to_push->addr == 0x4EDU && to_push->bus == CAR_BUS) {
+  if (precondition_requested && to_push->addr == 0x4EDU && to_push->bus == CAR_BUS) {
     CANPacket_t modified = *to_push;
     modified.data[5] = 0x10U;
     modified.data[6] = 0xA0U;
@@ -352,17 +352,17 @@ void precondition_can_rx_hook(CANPacket_t *to_push) {
   //   0x01 = off/idle, 0x05 = starting, 0x15 = fully running
   if (to_push->addr == 0x2ADU) {
     uint8_t status = to_push->data[1];
-    if (precondition_enabled && !precondition_starting_confirmed) {
+    if (precondition_requested && !precondition_starting_confirmed) {
       if (status == 0x05U || status == 0x15U) {
         precondition_starting_confirmed = true;
       }
     }
-    if (precondition_enabled && !precondition_started_confirmed) {
+    if (precondition_requested && !precondition_started_confirmed) {
       if (status == 0x15U) {
         precondition_started_confirmed = true;
       }
     }
-    if (precondition_enabled && precondition_started_confirmed) {
+    if (precondition_requested && precondition_started_confirmed) {
       if (status == 0x05U) {
         // preconditioning was previously fully active, but now it's only showing as starting.
         // this is a weird situation to be in; let's just reset the current attempt time,
@@ -381,7 +381,7 @@ void precondition_can_rx_hook(CANPacket_t *to_push) {
         precondition_stop_confirmed = true;
       }
     }
-    if (!precondition_enabled && !precondition_stop_confirmed && precondition_stop_ticks_remaining == 0U) {
+    if (!precondition_requested && !precondition_stop_confirmed && precondition_stop_ticks_remaining == 0U) {
       if (status == 0x01U) {
         precondition_stop_confirmed = true;
       }
@@ -399,7 +399,7 @@ void precondition_can_rx_hook(CANPacket_t *to_push) {
     bool star_button = (to_push->data[5] == 0x10U);
     if (star_button && !star_button_prev) {
       uint32_t now = microsecond_timer_get();
-      if (!precondition_enabled) {
+      if (!precondition_requested) {
         start_preconditioning(now);
       } else if (get_ts_elapsed(now, precondition_requested_ts) > PRECONDITION_DEBOUNCE_US) {
         stop_preconditioning(now);
@@ -415,7 +415,7 @@ void precondition_tick(void) {
   uint32_t time_since_last_attempt = get_ts_elapsed(now, precondition_last_attempt_ts);
 
   // give up and send one stop attempt if start retries exhausted
-  if (precondition_enabled
+  if (precondition_requested
       && precondition_start_ticks_remaining == 0U
       && precondition_retries >= PRECONDITION_MAX_RETRIES
       && ((!precondition_starting_confirmed && time_since_last_attempt > PRECONDITION_RETRY_US)
@@ -425,7 +425,7 @@ void precondition_tick(void) {
   }
 
   // retry start if not confirmed to be starting yet and it's been long enough
-  if (precondition_enabled && !precondition_starting_confirmed
+  if (precondition_requested && !precondition_starting_confirmed
       && precondition_start_ticks_remaining == 0U
       && precondition_retries < PRECONDITION_MAX_RETRIES
       && time_since_last_attempt > PRECONDITION_RETRY_US) {
@@ -435,7 +435,7 @@ void precondition_tick(void) {
   }
 
   // retry start if not confirmed to be started yet and it's been long enough (i.e. we got 2AD 05 but not 15 after a long time)
-  if (precondition_enabled && !precondition_started_confirmed
+  if (precondition_requested && !precondition_started_confirmed
       && precondition_start_ticks_remaining == 0U
       && precondition_retries < PRECONDITION_MAX_RETRIES
       && time_since_last_attempt > PRECONDITION_STARTED_TIMEOUT_US) {
@@ -445,7 +445,7 @@ void precondition_tick(void) {
   }
 
   // retry stop if not confirmed
-  if (!precondition_enabled && !precondition_stop_confirmed
+  if (!precondition_requested && !precondition_stop_confirmed
       && precondition_stop_ticks_remaining == 0U
       && precondition_retries < PRECONDITION_MAX_RETRIES
       && time_since_last_attempt > PRECONDITION_RETRY_US) {
@@ -455,13 +455,13 @@ void precondition_tick(void) {
   }
 
   // send initial burst of start messages
-  if (precondition_enabled && precondition_start_ticks_remaining > 0U) {
+  if (precondition_requested && precondition_start_ticks_remaining > 0U) {
     send_precondition_start_msg(precondition_start_ticks_remaining);
     precondition_start_ticks_remaining--;
   }
 
   // send initial burst of stop messages
-  if (!precondition_enabled && precondition_stop_ticks_remaining > 0U) {
+  if (!precondition_requested && precondition_stop_ticks_remaining > 0U) {
     send_precondition_stop_msg(precondition_stop_ticks_remaining);
     precondition_stop_ticks_remaining--;
   }

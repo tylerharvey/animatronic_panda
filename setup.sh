@@ -10,7 +10,7 @@ echo "installing dependencies"
 if [[ $PLATFORM == "Darwin" ]]; then
   export HOMEBREW_NO_AUTO_UPDATE=1
   brew install --cask gcc-arm-embedded
-  brew install python3 gcc@13
+  brew install python@3.12 gcc@13
 elif [[ $PLATFORM == "Linux" ]]; then
   sudo apt-get install -y --no-install-recommends \
     curl \
@@ -31,6 +31,7 @@ if ! command -v uv &>/dev/null; then
   set -e
 fi
 
+uv python pin 3.12
 export UV_PROJECT_ENVIRONMENT="$DIR/.venv"
 uv sync --all-extras
 source "$DIR/.venv/bin/activate"
